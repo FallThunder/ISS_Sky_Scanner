@@ -3,6 +3,7 @@
 # Project Configuration
 export PROJECT_ID="iss-sky-scanner-20241222"
 export PROJECT_NAME="ISS-Sky-Scanner"
+export PROJECT_NUMBER="768423610307"
 
 # Regional Configuration
 export REGION="us-east1"
@@ -32,4 +33,6 @@ export REQUIRED_APIS=(
     "cloudscheduler.googleapis.com"      # Cloud Scheduler (for future use)
     "run.googleapis.com"                 # Cloud Run (required for 2nd gen functions)
     "compute.googleapis.com"             # Compute Engine (for service accounts)
+    "eventarc.googleapis.com"            # Eventarc (required for Pub/Sub triggers)
+    "pubsub.googleapis.com"              # Pub/Sub (for event triggers)
 )

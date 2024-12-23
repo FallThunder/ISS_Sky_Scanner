@@ -15,75 +15,92 @@ source "$CONFIG_FILE"
 FUNCTION_NAME="iss_api_bff_web"
 
 # Print current configuration
-echo "🔧 Current configuration:"
-echo "Project ID: $PROJECT_ID"
+echo "🚀 Preparing to deploy $FUNCTION_NAME..."
+echo "Project: $PROJECT_ID"
 echo "Region: $REGION"
 echo "Runtime: $RUNTIME"
-echo "Service Account Email: $SERVICE_ACCOUNT_EMAIL"
+echo "Service Account: $SERVICE_ACCOUNT_EMAIL"
 
-# Verify gcloud and jq are installed
-command -v gcloud >/dev/null 2>&1 || { echo "❌ Error: gcloud is not installed" >&2; exit 1; }
-command -v jq >/dev/null 2>&1 || { echo "❌ Error: jq is not installed" >&2; exit 1; }
-
-# Check gcloud auth status
-if ! gcloud auth list 2>/dev/null | grep -q "ACTIVE"; then
-    echo "❌ Error: Not authenticated with gcloud"
+# Verify gcloud is installed
+if ! command -v gcloud &> /dev/null; then
+    echo "❌ Error: gcloud CLI is not installed"
     exit 1
 fi
 
+# Verify jq is installed (needed for testing)
+if ! command -v jq &> /dev/null; then
+    echo "❌ Error: jq is not installed"
+    echo "Please install jq using: brew install jq"
+    exit 1
+fi
+
+# Verify authentication
+if ! gcloud auth list --filter=status:ACTIVE --format="get(account)" &> /dev/null; then
+    echo "❌ Error: Not authenticated with gcloud"
+    echo "Please run: gcloud auth login"
+    exit 1
+fi
+
+# Set the project
+echo "🔧 Setting project to $PROJECT_ID..."
+gcloud config set project $PROJECT_ID
+
 # Enable required APIs
-echo "🔄 Enabling required APIs..."
+echo "📡 Enabling required APIs..."
 for api in "${REQUIRED_APIS[@]}"; do
-    gcloud services enable "$api" --project="$PROJECT_ID"
+    echo "Enabling $api..."
+    gcloud services enable $api
 done
 
 # Create service account if it doesn't exist
-if ! gcloud iam service-accounts describe "$SERVICE_ACCOUNT_EMAIL" --project="$PROJECT_ID" >/dev/null 2>&1; then
-    echo "🔑 Creating service account..."
-    gcloud iam service-accounts create "$SERVICE_ACCOUNT_NAME" \
-        --display-name="$SERVICE_ACCOUNT_NAME" \
-        --project="$PROJECT_ID"
+if ! gcloud iam service-accounts describe "$SERVICE_ACCOUNT_EMAIL" &>/dev/null; then
+    echo "👤 Creating service account: $SERVICE_ACCOUNT_NAME..."
+    gcloud iam service-accounts create $SERVICE_ACCOUNT_NAME \
+        --display-name="ISS Tracker Service Account"
 fi
 
 # Grant necessary roles to the service account
-echo "🔑 Granting roles to service account..."
-for role in "${IAM_ROLES[@]}"; do
-    gcloud projects add-iam-policy-binding "$PROJECT_ID" \
-        --member="serviceAccount:$SERVICE_ACCOUNT_EMAIL" \
-        --role="$role" \
-        --condition=None
-done
+echo "🔑 Granting IAM roles..."
+# Allow invoking other Cloud Functions
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+    --member="serviceAccount:$SERVICE_ACCOUNT_EMAIL" \
+    --role="roles/cloudfunctions.invoker"
 
 # Deploy the function
-echo "🚀 Deploying function..."
-gcloud functions deploy "$FUNCTION_NAME" \
-    --gen2 \
-    --runtime="$RUNTIME" \
-    --region="$REGION" \
-    --source="." \
-    --entry-point="$FUNCTION_NAME" \
+echo "📦 Deploying function..."
+
+gcloud functions deploy $FUNCTION_NAME \
+    --region=$REGION \
+    --runtime=$RUNTIME \
     --trigger-http \
-    --service-account="$SERVICE_ACCOUNT_EMAIL" \
-    --memory=256Mi \
-    --timeout=60s \
-    --min-instances=0 \
-    --max-instances=1 \
-    --ingress-settings=all \
-    --project="$PROJECT_ID"
+    --allow-unauthenticated \
+    --service-account=$SERVICE_ACCOUNT_EMAIL \
+    --memory=$MEMORY \
+    --timeout=$TIMEOUT \
+    --min-instances=$MIN_INSTANCES \
+    --max-instances=$MAX_INSTANCES \
+    --ingress-settings=$INGRESS_SETTINGS \
+    --entry-point=$FUNCTION_NAME
 
-# Get the function URL
-FUNCTION_URL=$(gcloud functions describe "$FUNCTION_NAME" \
-    --gen2 \
-    --region="$REGION" \
-    --format='get(serviceConfig.uri)' \
-    --project="$PROJECT_ID")
-
-echo "✅ Function deployed successfully!"
-echo "Function URL: $FUNCTION_URL"
-
-# Run tests if test script exists
-if [ -f "./test_function.sh" ]; then
+# Check deployment status
+if [ $? -eq 0 ]; then
+    echo "✅ Function deployed successfully!"
+    
+    # Get the function URL
+    FUNCTION_URL=$(gcloud functions describe $FUNCTION_NAME --region=$REGION --format='get(serviceConfig.uri)')
+    echo "📍 Function URL: $FUNCTION_URL"
+    
+    # Run tests
+    echo ""
     echo "🧪 Running tests..."
-    chmod +x ./test_function.sh
-    ./test_function.sh
+    if [ -f "./test_function.sh" ]; then
+        chmod +x ./test_function.sh
+        ./test_function.sh
+    else
+        echo "❌ Test script not found at ./test_function.sh"
+        exit 1
+    fi
+else
+    echo "❌ Deployment failed"
+    exit 1
 fi

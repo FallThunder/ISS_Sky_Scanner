@@ -37,6 +37,8 @@ if [ -z "$API_KEY" ]; then
     exit 1
 fi
 
+echo "Using API key: '$API_KEY'"
+
 # Test 1: No API key
 echo -e "\n${YELLOW}Test 1: No API key${NC}"
 echo "📡 Making request..."

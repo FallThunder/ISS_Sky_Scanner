@@ -110,5 +110,3 @@ fi
 
 # Print successful response
 echo -e "\n${GREEN}✅ All tests passed successfully!${NC}"
-echo "📊 Complete Response for Paris:"
-echo "$BODY" | jq '.'

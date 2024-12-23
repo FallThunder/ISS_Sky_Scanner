@@ -1,0 +1,80 @@
+{
+    // ========================================================================
+    // ESP32 VS Code Configuration Template
+    // ========================================================================
+    // Instructions:
+    // 1. Copy this file to 'c_cpp_properties.json' in the same directory
+    // 2. Update the paths according to your operating system
+    // 3. Update the ESP32 version numbers to match your installation
+    // 4. Remove these instruction comments if desired
+    // ========================================================================
+
+    "configurations": [
+        {
+            // ====================================================================
+            // Operating System Configuration
+            // ====================================================================
+            "name": "Mac",  // Options: "Mac", "Linux", or "Win32"
+            
+            // ====================================================================
+            // Include Paths Configuration
+            // ====================================================================
+            "includePath": [
+                "${workspaceFolder}/**",
+
+                // ESP32 Core and Standard Libraries
+                // Update the version number (3.0.7) to match your installation
+                "~/Library/Arduino15/packages/esp32/hardware/esp32/3.0.7/cores/esp32",
+                "~/Library/Arduino15/packages/esp32/hardware/esp32/3.0.7/libraries/**",
+                "~/Library/Arduino15/packages/esp32/hardware/esp32/3.0.7/tools/partitions",
+                "~/Library/Arduino15/packages/esp32/hardware/esp32/3.0.7/variants/esp32",
+
+                // ESP32 Arduino Libraries
+                "~/Library/Arduino15/packages/esp32/tools/esp32-arduino-libs/**",
+
+                // Your personal Arduino libraries
+                "~/Documents/Arduino/libraries/**"
+
+                // Path formats for other operating systems:
+                // --------------------------------------
+                // Windows:
+                // "C:/Users/{USERNAME}/AppData/Local/Arduino15/packages/esp32/..."
+                // "C:/Users/{USERNAME}/Documents/Arduino/libraries/**"
+                //
+                // Linux:
+                // "/home/{USERNAME}/.arduino15/packages/esp32/..."
+                // "/home/{USERNAME}/Arduino/libraries/**"
+            ],
+
+            // ====================================================================
+            // Compiler and Standards Configuration
+            // ====================================================================
+            "defines": [
+                "ARDUINO=200",
+                "ARDUINO_ARCH_ESP32=1",
+                "ESP32=1"
+            ],
+
+            // Only needed for Mac
+            "macFrameworkPath": [],
+
+            // Compiler Path - Update based on your OS and ESP32 tools version
+            // Make sure this matches your ESP32 installation
+            "compilerPath": "~/Library/Arduino15/packages/esp32/tools/esp-x32/2302/bin/xtensa-esp32-elf-gcc",
+
+            // Compiler paths for other operating systems:
+            // -----------------------------------------
+            // Windows:
+            // "C:/Users/{USERNAME}/AppData/Local/Arduino15/packages/esp32/tools/esp-x32/2302/bin/xtensa-esp32-elf-gcc"
+            //
+            // Linux:
+            // "/home/{USERNAME}/.arduino15/packages/esp32/tools/esp-x32/2302/bin/xtensa-esp32-elf-gcc"
+
+            // C/C++ Standard Versions
+            "cStandard": "c11",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "gcc-x64"
+        }
+    ],
+    "version": 4
+}

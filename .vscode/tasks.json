@@ -1,0 +1,26 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "PlatformIO: Build ESP Display",
+            "type": "shell",
+            "command": "cd ${workspaceFolder}/iss_display_apps/iss_esp_display && pio run",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
+        },
+        {
+            "label": "PlatformIO: Upload ESP Display",
+            "type": "shell",
+            "command": "cd ${workspaceFolder}/iss_display_apps/iss_esp_display && pio run --target upload",
+            "group": "build"
+        },
+        {
+            "label": "PlatformIO: Monitor ESP Display",
+            "type": "shell",
+            "command": "cd ${workspaceFolder}/iss_display_apps/iss_esp_display && pio device monitor",
+            "group": "none"
+        }
+    ]
+}

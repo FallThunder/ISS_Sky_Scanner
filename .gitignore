@@ -1,0 +1,34 @@
+# IDE and Editor files
+.vscode/*
+!.vscode/c_cpp_properties.json.template
+!.vscode/tasks.json
+.idea/
+*.swp
+*.swo
+.vscode/.browse.c_cpp.db*
+.vscode/ipch
+.vscode/launch.json
+
+# ESP32 VS Code files
+iss_display_apps/iss_esp_display/.vscode/*
+!iss_display_apps/iss_esp_display/.vscode/*.template
+
+# Build and Dependency directories
+node_modules/
+__pycache__/
+*.pyc
+venv/
+env/
+.pio/
+
+# Secrets and Credentials
+secrets.h
+*.env
+*.key
+credentials.json
+service-account*.json
+
+# Logs and temporary files
+*.log
+*.tmp
+.DS_Store

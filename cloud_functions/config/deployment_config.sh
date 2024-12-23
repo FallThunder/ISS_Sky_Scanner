@@ -35,4 +35,6 @@ export REQUIRED_APIS=(
     "compute.googleapis.com"             # Compute Engine (for service accounts)
     "eventarc.googleapis.com"            # Eventarc (required for Pub/Sub triggers)
     "pubsub.googleapis.com"              # Pub/Sub (for event triggers)
+    "secretmanager.googleapis.com"       # Secret Manager (for API keys and secrets)
+    "generativelanguage.googleapis.com"  # Generative Language API (for Gemini)
 )

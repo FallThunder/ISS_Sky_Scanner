@@ -7,56 +7,26 @@ let isRefreshCooldown = false;
 const COOLDOWN_DURATION = 15; // seconds
 
 function initMap() {
-    // Initialize map with dark mode and world wrap
     map = L.map('map', {
-        worldCopyJump: true,  // Makes panning across the dateline smoother
-        maxBoundsViscosity: 1.0  // Ensures smooth scrolling at edges
-    }).setView([0, 0], 2);
+        center: [0, 0],
+        zoom: 3,
+        zoomControl: true,
+        attributionControl: true
+    });
 
     L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-        attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, © <a href="https://carto.com/attributions">CARTO</a>',
-        maxZoom: 19,
-        className: 'dark-map',
-        backgroundColor: '#1a1a1a'  // Match our dark theme background
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+        maxZoom: 19
     }).addTo(map);
 
-    // Add custom center on ISS button
-    const centerButton = L.control({position: 'topleft'});
-    centerButton.onAdd = function () {
-        const div = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
-        div.innerHTML = `
-            <a href="#" title="Center on ISS" style="
-                font-size: 18px;
-                font-weight: bold;
-                color: #fff;
-                text-decoration: none;
-                text-align: center;
-                background-color: #2d2d2d;
-                width: 30px;
-                height: 30px;
-                line-height: 30px;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-            ">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <circle cx="12" cy="12" r="7"/>
-                    <line x1="12" y1="1" x2="12" y2="3"/>
-                    <line x1="12" y1="21" x2="12" y2="23"/>
-                    <line x1="1" y1="12" x2="3" y2="12"/>
-                    <line x1="21" y1="12" x2="23" y2="12"/>
-                </svg>
-            </a>
-        `;
-        div.onclick = function() {
-            if (issMarker) {
-                map.panTo(issMarker.getLatLng());
-            }
-            return false;
-        };
-        return div;
-    };
-    centerButton.addTo(map);
+    // Initialize the ISS marker
+    issMarker = L.marker([0, 0], {
+        icon: L.icon({
+            iconUrl: 'iss-icon.svg',
+            iconSize: [32, 32],
+            iconAnchor: [16, 16]
+        })
+    }).addTo(map);
 }
 
 // Format coordinates to be more readable
@@ -113,17 +83,20 @@ function startCooldown() {
 }
 
 // Check timestamp and update UI state
-function checkTimestampState(timestamp) {
+function checkTimestampState(timestamp, isInitialLoad = false) {
     const timestampCard = document.getElementById('timestamp');
     const currentTime = new Date();
     const dataTime = new Date(timestamp);
     const timeDiff = currentTime - dataTime;
+    const fiveMinutes = 5 * 60 * 1000;
     
-    // If data is more than 5 minutes old
-    if (timeDiff > 5 * 60 * 1000) {
+    // Only show red on initial load if data is stale
+    if (isInitialLoad && timeDiff > fiveMinutes) {
         timestampCard.classList.add('stale');
         timestampCard.classList.remove('refresh-ready');
-    } else if (timeDiff >= 4.9 * 60 * 1000) { // Start pulsing just before 5 minutes
+    } 
+    // After initial load, show blue exactly at 5 minutes
+    else if (timeDiff >= fiveMinutes) {
         timestampCard.classList.add('refresh-ready');
         timestampCard.classList.remove('stale');
     } else {
@@ -132,7 +105,7 @@ function checkTimestampState(timestamp) {
 }
 
 // Update the UI with ISS data
-function updateUI(data) {
+function updateUI(data, isInitialLoad = false) {
     const coordinates = document.getElementById('coordinates');
     const time = document.getElementById('time');
     const fact = document.getElementById('fact');
@@ -144,15 +117,24 @@ function updateUI(data) {
         // Update text displays with flag if available
         coordinates.textContent = `${formatCoordinates(parseFloat(data.latitude), parseFloat(data.longitude))}
             ${data.location_details ? `\n${data.location_details} ${flag}` : ''}`;
+        
+        // Update timestamp with warning message for stale data
+        const timestampCard = document.getElementById('timestamp');
+        if (!timestampCard.querySelector('.stale-warning')) {
+            const warningDiv = document.createElement('div');
+            warningDiv.className = 'stale-warning';
+            warningDiv.textContent = 'Warning: Location data is outdated';
+            timestampCard.appendChild(warningDiv);
+        }
         time.textContent = formatTimestamp(data.timestamp);
         fact.innerHTML = `<b style="color: #4a9eff; font-size: 0.9em;">Powered by Gemini</b><br>${data.fun_fact || 'No fun fact available for this location.'}`;
 
         // Initial timestamp state check
-        checkTimestampState(data.timestamp);
+        checkTimestampState(data.timestamp, isInitialLoad);
         
         // Set up continuous timestamp checking
         const timestampInterval = setInterval(() => {
-            checkTimestampState(data.timestamp);
+            checkTimestampState(data.timestamp, false);
         }, 1000);
         
         // Store the interval ID to clear it on next update
@@ -162,8 +144,10 @@ function updateUI(data) {
         window.previousTimestampInterval = timestampInterval;
 
         // Update map marker and popup with flag
-        if (data.location_details) {
+        if (data.location_details && issMarker) {
+            issMarker.setLatLng([parseFloat(data.latitude), parseFloat(data.longitude)]);
             issMarker.bindPopup(`<b>Current ISS Location:</b><br>${data.location_details} ${flag}`).openPopup();
+            map.panTo([parseFloat(data.latitude), parseFloat(data.longitude)]);
         }
     } else {
         console.error('Unexpected data structure:', data);
@@ -187,8 +171,8 @@ function showError(message, details = '') {
 }
 
 // Fetch ISS data
-async function fetchISSData() {
-    if (isRefreshCooldown) return;
+async function fetchISSData(isInitialLoad = false) {
+    if (isRefreshCooldown && !isInitialLoad) return;
     
     const refreshButton = document.getElementById('refresh');
     refreshButton.disabled = true;
@@ -206,12 +190,26 @@ async function fetchISSData() {
         
         const data = await response.json();
         console.log('Received data:', data);
-        updateUI(data);
+        
+        // Check if data is stale on manual refresh
+        if (!isInitialLoad) {
+            const currentTime = new Date();
+            const dataTime = new Date(data.timestamp);
+            const timeDiff = currentTime - dataTime;
+            
+            if (timeDiff > 5 * 60 * 1000) {
+                const timestampCard = document.getElementById('timestamp');
+                timestampCard.classList.add('stale');
+                timestampCard.classList.remove('refresh-ready');
+            }
+        }
+        
+        updateUI(data, isInitialLoad);
         // Hide any previous error messages
         document.getElementById('error').style.display = 'none';
         
         // Start cooldown after successful fetch
-        if (!isRefreshCooldown) {
+        if (!isRefreshCooldown && !isInitialLoad) {
             startCooldown();
         }
     } catch (error) {
@@ -227,11 +225,11 @@ async function fetchISSData() {
 // Initialize map and fetch data
 document.addEventListener('DOMContentLoaded', () => {
     initMap();
-    fetchISSData();
+    fetchISSData(true);  // true indicates initial load
     
     // Add refresh button handler
     const refreshButton = document.getElementById('refresh');
-    refreshButton.addEventListener('click', fetchISSData);
+    refreshButton.addEventListener('click', () => fetchISSData(false));  // false indicates manual refresh
 });
 
 // Convert country name to flag emoji

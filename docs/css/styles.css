@@ -282,3 +282,14 @@ footer {
         background-color: #2d2d3d;
     }
 }
+
+.stale-warning {
+    color: #ff4a4a;
+    font-size: 0.9em;
+    margin-top: 4px;
+    display: none;
+}
+
+#timestamp.stale .stale-warning {
+    display: block;
+}

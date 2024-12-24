@@ -33,6 +33,7 @@ def iss_api_get_last_stored_loc(request):
             'latitude': location_data.get('latitude'),
             'longitude': location_data.get('longitude'),
             'location_details': location_data.get('location', 'Location details unavailable'),
+            'country_code': location_data.get('country_code', ''),
             'status': 'success',
             'version': '1.0'
         }

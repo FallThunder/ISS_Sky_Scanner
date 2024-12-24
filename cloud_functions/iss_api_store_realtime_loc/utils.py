@@ -92,7 +92,8 @@ def store_iss_location() -> Dict[str, Any]:
             ('timestamp', iso_timestamp),
             ('latitude', location_data['latitude']),
             ('longitude', location_data['longitude']),
-            ('location', location_data['location_details']['location_name'])
+            ('location', location_data['location_details']['location_name']),
+            ('country_code', location_data['location_details'].get('country_code', ''))  # Add country code
         ])
 
         # Store in Firestore

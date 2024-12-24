@@ -78,6 +78,9 @@ def get_iss_location_with_fact():
 
         # Combine the data
         location_data['fun_fact'] = fact_data.get('fact', 'Fun fact coming soon!')
+        # Ensure country code is preserved
+        if 'country_code' not in location_data:
+            location_data['country_code'] = ''  # Add empty country code if not present
         return location_data
 
     except Exception as e:

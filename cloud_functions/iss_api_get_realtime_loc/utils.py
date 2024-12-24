@@ -44,6 +44,7 @@ def reverse_geocode(lat: float, lon: float) -> Optional[Dict[str, Any]]:
         locality_info = location_data.get('localityInfo', {}).get('informative', [])
         water_keywords = ['ocean', 'sea']
         location_name = None
+        country_code = location_data.get('countryCode', '')  # Get country code
         
         # First check for water bodies
         for info in locality_info:
@@ -69,9 +70,10 @@ def reverse_geocode(lat: float, lon: float) -> Optional[Dict[str, Any]]:
                 location_components.append(location_data['countryName'])
             
             location_name = ", ".join(location_components) if location_components else "Over Ocean"
-            
+        
         return {
             'location_name': location_name,
+            'country_code': country_code,  # Add country code to the response
             'raw_data': location_data
         }
             

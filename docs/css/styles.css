@@ -243,6 +243,12 @@ footer {
     font-weight: bold;
 }
 
+.volunteer {
+    margin-top: 0.5rem;
+    color: #4a9eff;
+    font-style: italic;
+}
+
 .credit a {
     color: #4a9eff;
     text-decoration: none;

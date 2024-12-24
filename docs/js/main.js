@@ -208,32 +208,62 @@ function updateUI(data) {
             popupAnchor: [0, -16]
         });
         
-        // Remove existing marker if it exists
+        // Remove existing markers if they exist
         if (issMarker) {
-            map.removeLayer(issMarker);
+            if (Array.isArray(issMarker)) {
+                issMarker.forEach(marker => map.removeLayer(marker));
+            } else {
+                map.removeLayer(issMarker);
+            }
         }
         
-        // Add marker and center map
-        issMarker = L.marker([lat, lon], { 
-            icon: issIcon,
-            // Enable marker wrapping for better visibility
-            wrapLatLng: true
-        }).addTo(map);
-        
-        // When centering on the ISS, ensure we use the closest instance of the marker
+        // Get map bounds
         const bounds = map.getBounds();
         const center = bounds.getCenter();
-        let targetLng = lon;
         
-        // Adjust longitude to use the closest wrapped position
-        while (targetLng < center.lng - 180) targetLng += 360;
-        while (targetLng > center.lng + 180) targetLng -= 360;
+        // Calculate equivalent positions
+        const copies = [];
+        let baseLng = lon;
         
-        map.panTo([lat, targetLng]);
+        // Normalize the base longitude to be within [-180, 180]
+        while (baseLng > 180) baseLng -= 360;
+        while (baseLng < -180) baseLng += 360;
         
-        // Add popup with header, location name, and flag on same line for popup
-        if (data.location_details) {
-            issMarker.bindPopup(`<b>Current ISS Location:</b><br>${data.location_details} ${flag}`).openPopup();
+        // Add positions for the entire visible range plus buffer
+        for (let lng = baseLng - 720; lng <= baseLng + 720; lng += 360) {
+            copies.push([lat, lng]);
+        }
+        
+        // Create markers for all positions
+        issMarker = copies.map(pos => {
+            const marker = L.marker(pos, {
+                icon: issIcon
+            }).addTo(map);
+            
+            // Add popup to each marker
+            if (data.location_details) {
+                marker.bindPopup(`<b>Current ISS Location:</b><br>${data.location_details} ${flag}`);
+            }
+            
+            return marker;
+        });
+        
+        // Find the closest copy to the center for panning
+        let closestCopy = copies.reduce((prev, curr) => {
+            const prevDist = Math.abs(prev[1] - center.lng);
+            const currDist = Math.abs(curr[1] - center.lng);
+            return prevDist < currDist ? prev : curr;
+        });
+        
+        map.panTo(closestCopy);
+        
+        // Open popup on the closest marker
+        const closestMarker = issMarker.find(marker => 
+            marker.getLatLng().lat === closestCopy[0] && 
+            marker.getLatLng().lng === closestCopy[1]
+        );
+        if (closestMarker) {
+            closestMarker.openPopup();
         }
     } else {
         console.error('Unexpected data structure:', data);

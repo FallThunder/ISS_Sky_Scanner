@@ -123,17 +123,11 @@ function checkTimestampState(timestamp) {
     if (timeDiff > 5 * 60 * 1000) {
         timestampCard.classList.add('stale');
         timestampCard.classList.remove('refresh-ready');
+    } else if (timeDiff >= 4.9 * 60 * 1000) { // Start pulsing just before 5 minutes
+        timestampCard.classList.add('refresh-ready');
+        timestampCard.classList.remove('stale');
     } else {
         timestampCard.classList.remove('stale', 'refresh-ready');
-    }
-    
-    // Set timer to check for refresh-ready state
-    const timeUntilRefresh = 5 * 60 * 1000 - timeDiff;
-    if (timeUntilRefresh > 0) {
-        setTimeout(() => {
-            timestampCard.classList.add('refresh-ready');
-            timestampCard.classList.remove('stale');
-        }, timeUntilRefresh);
     }
 }
 
@@ -151,10 +145,21 @@ function updateUI(data) {
         coordinates.textContent = `${formatCoordinates(parseFloat(data.latitude), parseFloat(data.longitude))}
             ${data.location_details ? `\n${data.location_details} ${flag}` : ''}`;
         time.textContent = formatTimestamp(data.timestamp);
-        fact.textContent = data.fun_fact || 'No fun fact available for this location.';
+        fact.innerHTML = `<b style="color: #4a9eff; font-size: 0.9em;">Powered by Gemini</b><br>${data.fun_fact || 'No fun fact available for this location.'}`;
 
-        // Check timestamp state
+        // Initial timestamp state check
         checkTimestampState(data.timestamp);
+        
+        // Set up continuous timestamp checking
+        const timestampInterval = setInterval(() => {
+            checkTimestampState(data.timestamp);
+        }, 1000);
+        
+        // Store the interval ID to clear it on next update
+        if (window.previousTimestampInterval) {
+            clearInterval(window.previousTimestampInterval);
+        }
+        window.previousTimestampInterval = timestampInterval;
 
         // Update map marker and popup with flag
         if (data.location_details) {

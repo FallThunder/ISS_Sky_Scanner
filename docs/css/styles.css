@@ -265,17 +265,20 @@ footer {
 #timestamp.refresh-ready {
     background-color: #2d2d3d;
     border-left: 4px solid #4a9eff;
-    animation: pulse 2s infinite;
+    animation: pulse-blue 2s infinite;
 }
 
-@keyframes pulse {
+@keyframes pulse-blue {
     0% {
         border-left-color: #4a9eff;
+        background-color: #2d2d3d;
     }
     50% {
         border-left-color: #7ab8ff;
+        background-color: #2d3d4d;
     }
     100% {
         border-left-color: #4a9eff;
+        background-color: #2d2d3d;
     }
 }

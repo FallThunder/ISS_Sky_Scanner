@@ -50,7 +50,20 @@ h2 {
 
 .data-text {
     font-size: 1.2em;
-    white-space: pre-line;
+    margin: 10px 0;
+    line-height: 1.5;
+}
+
+/* Ensure emojis display at a consistent size */
+.data-text, .leaflet-popup-content {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+/* Make flags slightly larger than text */
+.data-text span.flag, .leaflet-popup-content span.flag {
+    font-size: 1.2em;
+    vertical-align: middle;
+    margin-left: 5px;
 }
 
 /* Fun fact styles */
@@ -242,4 +255,27 @@ footer {
 
 .leaflet-popup-content b {
     color: #4a9eff !important;
+}
+
+#timestamp.stale {
+    background-color: #3d2d2d;
+    border-left: 4px solid #ff4a4a;
+}
+
+#timestamp.refresh-ready {
+    background-color: #2d2d3d;
+    border-left: 4px solid #4a9eff;
+    animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+    0% {
+        border-left-color: #4a9eff;
+    }
+    50% {
+        border-left-color: #7ab8ff;
+    }
+    100% {
+        border-left-color: #4a9eff;
+    }
 }

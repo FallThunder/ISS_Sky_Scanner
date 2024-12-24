@@ -112,6 +112,31 @@ function startCooldown() {
     }, 1000);
 }
 
+// Check timestamp and update UI state
+function checkTimestampState(timestamp) {
+    const timestampCard = document.getElementById('timestamp');
+    const currentTime = new Date();
+    const dataTime = new Date(timestamp);
+    const timeDiff = currentTime - dataTime;
+    
+    // If data is more than 5 minutes old
+    if (timeDiff > 5 * 60 * 1000) {
+        timestampCard.classList.add('stale');
+        timestampCard.classList.remove('refresh-ready');
+    } else {
+        timestampCard.classList.remove('stale', 'refresh-ready');
+    }
+    
+    // Set timer to check for refresh-ready state
+    const timeUntilRefresh = 5 * 60 * 1000 - timeDiff;
+    if (timeUntilRefresh > 0) {
+        setTimeout(() => {
+            timestampCard.classList.add('refresh-ready');
+            timestampCard.classList.remove('stale');
+        }, timeUntilRefresh);
+    }
+}
+
 // Update the UI with ISS data
 function updateUI(data) {
     const coordinates = document.getElementById('coordinates');
@@ -119,50 +144,21 @@ function updateUI(data) {
     const fact = document.getElementById('fact');
     
     if (data.latitude && data.longitude) {
-        // Update text displays
+        // Get flag emoji if location is over land
+        const flag = data.location_details ? getCountryFlag(data.location_details) : '';
+        
+        // Update text displays with flag if available
         coordinates.textContent = `${formatCoordinates(parseFloat(data.latitude), parseFloat(data.longitude))}
-            ${data.location_details ? `\n${data.location_details}` : ''}`;
+            ${data.location_details ? `\n${data.location_details} ${flag}` : ''}`;
         time.textContent = formatTimestamp(data.timestamp);
         fact.textContent = data.fun_fact || 'No fun fact available for this location.';
 
-        // Update map
-        const lat = parseFloat(data.latitude);
-        const lon = parseFloat(data.longitude);
-        
-        // Create a custom icon for the ISS using the SVG file
-        const issIcon = L.icon({
-            iconUrl: './assets/iss-icon.svg',
-            iconSize: [32, 32],
-            iconAnchor: [16, 16],
-            popupAnchor: [0, -16]
-        });
-        
-        // Remove existing marker if it exists
-        if (issMarker) {
-            map.removeLayer(issMarker);
-        }
-        
-        // Add marker and center map
-        issMarker = L.marker([lat, lon], { 
-            icon: issIcon,
-            // Enable marker wrapping for better visibility
-            wrapLatLng: true
-        }).addTo(map);
-        
-        // When centering on the ISS, ensure we use the closest instance of the marker
-        const bounds = map.getBounds();
-        const center = bounds.getCenter();
-        let targetLng = lon;
-        
-        // Adjust longitude to use the closest wrapped position
-        while (targetLng < center.lng - 180) targetLng += 360;
-        while (targetLng > center.lng + 180) targetLng -= 360;
-        
-        map.panTo([lat, targetLng]);
-        
-        // Add popup with header and location name
+        // Check timestamp state
+        checkTimestampState(data.timestamp);
+
+        // Update map marker and popup with flag
         if (data.location_details) {
-            issMarker.bindPopup(`<b>Current ISS Location:</b><br>${data.location_details}`).openPopup();
+            issMarker.bindPopup(`<b>Current ISS Location:</b><br>${data.location_details} ${flag}`).openPopup();
         }
     } else {
         console.error('Unexpected data structure:', data);
@@ -233,3 +229,38 @@ document.addEventListener('DOMContentLoaded', () => {
     refreshButton.addEventListener('click', fetchISSData);
 });
 
+// Convert country name to flag emoji
+function getCountryFlag(location) {
+    try {
+        // Extract country name from location string
+        const locationParts = location.replace('Over the ', '').split(/,|\snear\s/);
+        const countryName = locationParts[0].trim();
+        
+        // Skip if it's an ocean or sea
+        if (countryName.includes('Ocean') || countryName.includes('Sea')) {
+            return '';
+        }
+        
+        // Try to find the country code
+        const country = CountryList.search(countryName);
+        if (country && country.code) {
+            // Convert country code to flag emoji (using regional indicator symbols)
+            const codePoints = Array.from(country.code)
+                .map(char => 127397 + char.charCodeAt());
+            return String.fromCodePoint(...codePoints);
+        }
+        
+        // If first part didn't work, try the second part (for "near" cases)
+        if (locationParts.length > 1) {
+            const nearCountry = CountryList.search(locationParts[1].trim());
+            if (nearCountry && nearCountry.code) {
+                const codePoints = Array.from(nearCountry.code)
+                    .map(char => 127397 + char.charCodeAt());
+                return String.fromCodePoint(...codePoints);
+            }
+        }
+    } catch (e) {
+        console.warn('Error getting country flag:', e);
+    }
+    return ''; // Return empty string if no match found or error occurred
+}

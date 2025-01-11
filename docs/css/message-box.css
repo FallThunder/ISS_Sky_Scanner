@@ -1,0 +1,61 @@
+.message-box-container {
+    position: fixed;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 9999;
+    width: 90%;
+    max-width: 600px;
+    background-color: #1a1a1a;
+    border: 2px solid #4a90e2;
+    border-radius: 8px;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.5);
+    padding: 15px 20px;
+    display: none;
+    animation: slideDown 0.3s ease-out;
+    margin-bottom: 20px;
+}
+
+.message-box-content {
+    color: #fff;
+    margin-right: 30px;
+    font-size: 1.1rem;
+    line-height: 1.5;
+    word-wrap: break-word;
+    font-weight: 500;
+}
+
+.message-box-close {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    right: 10px;
+    background: none;
+    border: none;
+    color: #888;
+    font-size: 1.5rem;
+    cursor: pointer;
+    padding: 0;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: color 0.2s, transform 0.2s;
+}
+
+.message-box-close:hover {
+    color: #fff;
+    transform: translateY(-50%) scale(1.1);
+}
+
+@keyframes slideDown {
+    from {
+        transform: translate(-50%, -100%);
+        opacity: 0;
+    }
+    to {
+        transform: translate(-50%, 0);
+        opacity: 1;
+    }
+}

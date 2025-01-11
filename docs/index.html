@@ -13,8 +13,15 @@
     <!-- Our CSS -->
     <link rel="stylesheet" href="./css/styles.css">
     <link rel="stylesheet" href="./css/chat.css">
+    <link rel="stylesheet" href="./css/message-box.css">
 </head>
 <body>
+    <!-- Website Message Box -->
+    <div id="messageBox" class="message-box-container">
+        <div class="message-box-content"></div>
+        <button class="message-box-close" aria-label="Close message">&times;</button>
+    </div>
+
     <div class="container">
         <header>
             <h1>ISS Sky Scanner</h1>
@@ -96,5 +103,6 @@
     <script type="module" src="./js/config.js"></script>
     <script type="module" src="./js/main.js"></script>
     <script type="module" src="./js/chat.js"></script>
+    <script type="module" src="./js/message.js"></script>
 </body>
 </html>

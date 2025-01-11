@@ -35,7 +35,7 @@ def generate_location_fun_fact(location):
     debug_info = []
     
     try:
-        api_key = getSecret('iss-sky-scanner-gemini-api-key')
+        api_key = getSecret('iss-sky-scanner-genai-api-key')
         if not api_key:
             raise ValueError("Failed to retrieve API key")
             

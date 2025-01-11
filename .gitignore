@@ -32,3 +32,6 @@ service-account*.json
 *.log
 *.tmp
 .DS_Store
+
+# Website files
+website_message.txt

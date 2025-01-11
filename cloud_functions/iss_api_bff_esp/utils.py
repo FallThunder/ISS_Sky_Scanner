@@ -9,7 +9,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # API URLs
-LAST_LOC_URL = "https://iss-api-get-last-stored-loc-cklav7ht2q-ue.a.run.app"
+LAST_LOC_URL = "https://us-east1-iss-sky-scanner-20241222.cloudfunctions.net/iss_api_query_loc_history"
 FACT_URL = "https://iss-api-get-loc-fact-cklav7ht2q-ue.a.run.app"
 
 def get_secret(secret_id):
@@ -49,7 +49,7 @@ def get_id_token(target_url):
 def get_iss_location_with_fact():
     """
     Gets the latest ISS location and a fun fact about that location.
-    Combines data from iss_api_get_last_stored_loc and iss_api_get_loc_fact.
+    Combines data from iss_api_query_loc_history (with limit=1) and iss_api_get_loc_fact.
     
     Returns:
         dict: Combined location data and fun fact
@@ -59,7 +59,7 @@ def get_iss_location_with_fact():
         logger.info("Fetching latest ISS location...")
         token = get_id_token(LAST_LOC_URL)
         headers = {"Authorization": f"Bearer {token}"}
-        location_response = requests.get(LAST_LOC_URL, headers=headers)
+        location_response = requests.get(f"{LAST_LOC_URL}?limit=1", headers=headers)
         location_response.raise_for_status()
         location_data = location_response.json()
 
@@ -67,8 +67,15 @@ def get_iss_location_with_fact():
             logger.error(f"Error getting location: {location_data}")
             return None
 
+        # Extract the first (and only) location from the results
+        if not location_data.get('locations') or len(location_data['locations']) == 0:
+            logger.error("No location data found")
+            return None
+            
+        location_info = location_data['locations'][0]
+
         # Get fun fact about the location
-        location = location_data.get('location_details')
+        location = location_info.get('location')
         logger.info(f"Fetching fun fact for location: {location}")
         token = get_id_token(FACT_URL)  # Get a new token for the fact API
         headers = {"Authorization": f"Bearer {token}"}
@@ -77,8 +84,9 @@ def get_iss_location_with_fact():
         fact_data = fact_response.json()
 
         # Combine the data
-        location_data['fun_fact'] = fact_data.get('fact', 'Fun fact coming soon!')
-        return location_data
+        location_info['fun_fact'] = fact_data.get('fact', 'Fun fact coming soon!')
+        location_info['status'] = 'success'  # Add status field for backward compatibility
+        return location_info
 
     except Exception as e:
         logger.error(f"Error getting ISS location with fact: {str(e)}")

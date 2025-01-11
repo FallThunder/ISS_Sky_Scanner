@@ -100,7 +100,7 @@ if ! echo "$BODY" | jq empty 2>/dev/null; then
 fi
 
 # Check required fields
-REQUIRED_FIELDS=("timestamp" "latitude" "longitude" "location_details" "fun_fact" "status")
+REQUIRED_FIELDS=("timestamp" "latitude" "longitude" "location" "country_code" "fun_fact" "status")
 for field in "${REQUIRED_FIELDS[@]}"; do
     if ! echo "$BODY" | jq -e ".$field" > /dev/null 2>&1; then
         echo -e "${RED}❌ Missing required field: $field${NC}"

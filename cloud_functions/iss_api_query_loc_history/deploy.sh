@@ -12,7 +12,7 @@ fi
 source "$CONFIG_FILE"
 
 # Function-specific configuration
-FUNCTION_NAME="iss_api_get_last_stored_loc"
+FUNCTION_NAME="iss_api_query_loc_history"
 
 # Print current configuration
 echo "🚀 Preparing to deploy $FUNCTION_NAME..."

@@ -1,7 +1,5 @@
 class MessageBox {
     constructor() {
-        console.log('%c Message Box Initializing', 'background: #222; color: #bada55; padding: 2px;');
-        
         this.container = document.getElementById('messageBox');
         if (!this.container) {
             console.error('%c Error: Message box container not found!', 'background: #222; color: #ff0000; padding: 2px;');
@@ -14,10 +12,9 @@ class MessageBox {
         
         // Initialize
         this.setupEventListeners();
-        this.fetchMessage();
         
-        // Fetch message every 5 minutes
-        setInterval(() => this.fetchMessage(), 5 * 60 * 1000);
+        // Fetch message once on load
+        this.fetchMessage();
     }
 
     setupEventListeners() {

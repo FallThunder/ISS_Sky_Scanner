@@ -12,7 +12,7 @@ fi
 source "$CONFIG_FILE"
 
 # Function-specific configuration
-FUNCTION_NAME="iss_api_store_feedback"
+FUNCTION_NAME="iss_api_query_assistant"
 
 # Print current configuration
 echo "🚀 Preparing to deploy $FUNCTION_NAME..."
@@ -24,13 +24,6 @@ echo "Service Account: $SERVICE_ACCOUNT_EMAIL"
 # Verify gcloud is installed
 if ! command -v gcloud &> /dev/null; then
     echo "❌ Error: gcloud CLI is not installed"
-    exit 1
-fi
-
-# Verify jq is installed (needed for testing)
-if ! command -v jq &> /dev/null; then
-    echo "❌ Error: jq is not installed"
-    echo "Please install jq using: brew install jq"
     exit 1
 fi
 
@@ -63,27 +56,16 @@ fi
 echo "🔑 Granting IAM roles..."
 gcloud projects add-iam-policy-binding $PROJECT_ID \
     --member="serviceAccount:$SERVICE_ACCOUNT_EMAIL" \
-    --role="roles/datastore.user"
-
-gcloud projects add-iam-policy-binding $PROJECT_ID \
-    --member="serviceAccount:$SERVICE_ACCOUNT_EMAIL" \
     --role="roles/secretmanager.secretAccessor"
 
 # Deploy the function
 echo "📦 Deploying function..."
 
-ALLOW_UNAUTH_FLAG=""
-if [ "$ALLOW_UNAUTHENTICATED" = "true" ]; then
-    ALLOW_UNAUTH_FLAG="--allow-unauthenticated"
-else
-    ALLOW_UNAUTH_FLAG="--no-allow-unauthenticated"
-fi
-
 gcloud functions deploy $FUNCTION_NAME \
     --region=$REGION \
     --runtime=$RUNTIME \
     --trigger-http \
-    --no-allow-unauthenticated \
+    --allow-unauthenticated \
     --service-account=$SERVICE_ACCOUNT_EMAIL \
     --memory=$MEMORY \
     --timeout=$TIMEOUT \

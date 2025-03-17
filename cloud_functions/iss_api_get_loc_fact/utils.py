@@ -10,7 +10,10 @@ def getSecret(secret_id):
         client = secretmanager.SecretManagerServiceClient()
         name = f"projects/iss-sky-scanner-20241222/secrets/{secret_id}/versions/latest"
         response = client.access_secret_version(name=name)
-        return response.payload.data.decode('UTF-8')
+        secret_value = response.payload.data.decode('UTF-8')
+        # Log first few characters of the key to verify which version we got
+        logging.info(f"Retrieved secret starting with: {secret_value[:8]}...")
+        return secret_value
     except Exception as e:
         logging.warning(f"Failed to get secret {secret_id}: {str(e)}")
         return None

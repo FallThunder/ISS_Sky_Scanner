@@ -11,6 +11,9 @@ class ChatWidget {
         this.messageDiv = document.getElementById('chatMessage');
 
         this.initializeEventListeners();
+
+        // Show welcome message
+        this.addMessage("Hello! I track the International Space Station's location. I can tell you:\n• Where the ISS is right now\n• When it was last over a specific country\n• How many times it passed over a location", false);
     }
 
     initializeEventListeners() {
@@ -88,6 +91,117 @@ class ChatWidget {
         return typingElement;
     }
 
+    cleanResponse(response) {
+        console.log('Original response:', response);
+        
+        // First, parse the outer JSON structure
+        const outerJson = JSON.parse(response);
+        console.log('Outer JSON:', outerJson);
+        
+        if (outerJson.status !== 'success') {
+            throw new Error('Response status not success');
+        }
+        
+        // Extract the JSON content from between the markdown code blocks
+        const match = outerJson.response.match(/```json\s*([\s\S]*?)\s*```/);
+        if (!match) {
+            console.log('No markdown code block found');
+            throw new Error('Invalid response format');
+        }
+
+        console.log('Extracted content:', match[1]);
+        
+        // Parse the inner JSON
+        const data = JSON.parse(match[1]);
+        console.log('Parsed inner JSON:', data);
+        
+        return data;
+    }
+
+    async queryDatabase(queryData) {
+        console.log('Querying database with:', queryData);
+        
+        // Construct the query URL with parameters
+        const params = new URLSearchParams();
+        for (const [key, value] of Object.entries(queryData)) {
+            if (value !== undefined) {
+                params.append(key, value);
+            }
+        }
+        
+        const queryUrl = `${config.DB_API_URL}?${params.toString()}`;
+        console.log('Query URL:', queryUrl);
+        
+        try {
+            const response = await fetch(queryUrl);
+            if (!response.ok) {
+                throw new Error('Database query failed');
+            }
+            
+            const data = await response.json();
+            console.log('Database response:', data);
+            
+            if (!data || !data.locations || data.locations.length === 0) {
+                return { error: 'No matching data found' };
+            }
+            
+            return data;
+        } catch (error) {
+            console.error('Database query error:', error);
+            return { error: 'Failed to query the database' };
+        }
+    }
+
+    formatDatabaseResponse(data) {
+        if (data.error) {
+            return data.error;
+        }
+
+        const locations = data.locations;
+        if (!locations || locations.length === 0) {
+            return 'No matching data found';
+        }
+
+        // For a single location (most recent)
+        if (locations.length === 1) {
+            const loc = locations[0];
+            const date = new Date(loc.timestamp).toLocaleString();
+            return `The ISS was over ${loc.country || loc.region || 'unknown territory'} at ${date} (${loc.latitude.toFixed(2)}°, ${loc.longitude.toFixed(2)}°)`;
+        }
+
+        // For multiple locations
+        return `Found ${locations.length} locations. The most recent was over ${locations[0].country || locations[0].region || 'unknown territory'} at ${new Date(locations[0].timestamp).toLocaleString()}`;
+    }
+
+    async sendFeedback(rating, comment) {
+        try {
+            const response = await fetch(config.CHAT_API_URL, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    query: `${rating} stars: ${comment}`,
+                    userAgent: navigator.userAgent
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to submit feedback');
+            }
+
+            const data = await response.json();
+            if (data.status !== 'success') {
+                throw new Error('Feedback submission failed');
+            }
+
+            return true;
+        } catch (error) {
+            console.error('Error submitting feedback:', error);
+            return false;
+        }
+    }
+
     async sendMessage() {
         const message = this.input.value.trim();
         if (!message) return;
@@ -102,7 +216,7 @@ class ChatWidget {
         const typingIndicator = this.showTypingIndicator();
 
         try {
-            const response = await fetch(`${config.CHAT_API_URL}?api_key=${config.CHAT_API_KEY}`, {
+            const response = await fetch(config.CHAT_API_URL, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -114,34 +228,25 @@ class ChatWidget {
             typingIndicator.remove();
 
             if (!response.ok) {
-                const errorData = await response.json();
-                throw new Error(errorData.error || 'Failed to get response');
+                console.error('Response not OK:', await response.text());
+                throw new Error('Failed to get response');
             }
 
-            const data = await response.json();
+            const rawResponse = await response.text();
+            const data = this.cleanResponse(rawResponse);
             
-            // Format and display the response
-            let aiResponse = '';
-            
-            if (data.results && data.results.length > 0) {
-                // Format the results into a natural language response
-                const locations = data.results.map(result => {
-                    const location = result.location_details || {};
-                    const time = new Date(result.timestamp).toLocaleString();
-                    return `${location.country || 'Unknown'} at ${time}`;
-                });
-                
-                aiResponse = `Based on your query, here's what I found:\n${locations.join('\n')}`;
-            } else {
-                aiResponse = "I couldn't find any data matching your query. Try asking about specific countries or time periods.";
-            }
+            // Display the message from the response
+            this.addMessage(data.message, false);
 
-            this.addMessage(aiResponse, false);
+            // If there's a database response, display it
+            if (data.db_response) {
+                this.addMessage(data.db_response, false);
+            }
 
         } catch (error) {
-            console.error('Error sending message:', error);
+            console.error('Error processing message:', error);
             typingIndicator.remove();
-            this.addMessage("I'm sorry, I encountered an error processing your request. Please try again.", false);
+            this.addMessage("I encountered an issue processing your request. Please try again!", false);
         }
     }
 }

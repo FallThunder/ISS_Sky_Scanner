@@ -1,147 +1,171 @@
-import os
-import requests
-import json
-from typing import Dict, Any
+import functions_framework
+from flask import jsonify, request
+import logging
+from utils import query_gemini, extract_response_text, get_cors_headers, get_gemini_api_key, query_database, format_database_response, store_feedback
+from google.auth.transport.requests import AuthorizedSession, Request
+from google.oauth2 import id_token
+import google.auth
 
-def query_gemini(prompt: str) -> Dict[Any, Any]:
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+@functions_framework.http
+def iss_api_query_assistant(request):
     """
-    Query the Gemini API with a given prompt.
+    HTTP Cloud Function to handle ISS-related queries using Gemini.
     
     Args:
-        prompt (str): The text prompt to send to Gemini
+        request (flask.Request): The request object
         
     Returns:
-        Dict: The JSON response from the API
+        flask.Response: JSON response with the answer
     """
-    # Create a system prompt that sets the context
-    system_prompt = """You are an expert on the International Space Station (ISS) with access to both general knowledge and a historical location database.
+    # Handle CORS preflight request
+    if request.method == 'OPTIONS':
+        logger.info("Handling CORS preflight request")
+        headers = get_cors_headers(is_preflight=True)
+        return ('', 204, headers)
 
-The historical database contains ISS location data collected every 5 minutes for the past three months. The data is stored in Firestore collection 'iss_loc_history' with the following structure for each document:
-{
-    country_code: string,     // e.g., "RU" for Russia
-    latitude: number,         // e.g., 43.0416
-    longitude: number,        // e.g., 133.7455
-    location: string,         // e.g., "Lazo, Primorskiy Kray, Russian Federation (the)"
-    timestamp: string         // ISO format e.g., "2024-12-25T23:15:04+00:00"
-}
-
-You can query this database using Firestore's collection methods, but you can only use ONE filter parameter at a time. This data can help answer questions about:
-- Historical flight paths (using timestamp ranges)
-- Time spent over specific countries (using country_code)
-- Patterns in ISS movement (using latitude OR longitude ranges)
-- Geographic coverage (using single coordinate ranges)
-
-When responding to questions, follow these guidelines:
-
-1. If the question can be answered using historical location data:
-   - Determine the SINGLE most appropriate filter to use
-   - Indicate that you would use the database API
-   - Specify the Firestore query parameters you would use
-   - Examples: 
-     * "To find the last location: collection('iss_loc_history').orderBy('timestamp', 'desc').limit(1)"
-     * "To find passes over Japan: collection('iss_loc_history').where('country_code', '==', 'JP')"
-     * "To find locations after a date: collection('iss_loc_history').where('timestamp', '>=', startDate)"
-   - Note: You cannot combine multiple filters (e.g., cannot filter by both country and time range)
-
-2. If the question requires multiple filters:
-   - Explain that we can only use one filter at a time
-   - Suggest breaking down the query into multiple steps or choosing the most important filter
-
-3. If the question is ISS-related but doesn't require historical data, provide information about:
-   - Technical specifications and capabilities
-   - Current and historical missions and crew
-   - Scientific experiments and research
-   - Operations and maintenance
-   - International cooperation
-   - General orbital mechanics
-
-4. If the question is not ISS-related:
-   - Politely explain that you can only answer questions about the ISS
-
-Keep answers concise but informative, focusing on verified facts rather than speculation.
-"""
-
-    # Combine system prompt with user's question
-    full_prompt = f"{system_prompt}\n\nQuestion: {prompt}\nAnswer:"
-
-    api_key = "AIzaSyBiplOYEyayI-SkLIAG2Z_rCb3groJrVrs"
-
-    # API endpoint
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
-    
-    # Request headers
-    headers = {
-        'Content-Type': 'application/json'
-    }
-    
-    # Request payload
-    payload = {
-        "contents": [{
-            "parts": [{"text": full_prompt}]
-        }]
-    }
-    
     try:
-        # Make the API request
-        response = requests.post(
-            f"{url}?key={api_key}",
-            headers=headers,
-            json=payload
-        )
+        # Get request data
+        request_json = request.get_json(silent=True)
+        logger.info(f"Received request: {request_json}")
         
-        # Check if request was successful
-        response.raise_for_status()
-        
-        # Return the JSON response
-        return response.json()
-        
-    except requests.exceptions.RequestException as e:
-        print(f"Error making request to Gemini API: {e}")
-        raise
+        if not request_json or 'query' not in request_json:
+            logger.error("No query provided in request")
+            return jsonify({
+                'error': 'No query provided',
+                'status': 'error'
+            }), 400, get_cors_headers()
 
-def extract_response_text(response: Dict[Any, Any]) -> str:
-    """
-    Extract the text response from Gemini API's JSON response.
-    
-    Args:
-        response (Dict): The JSON response from Gemini API
+        # Get the user's query
+        user_query = request_json['query'].strip()
+        logger.info(f"Processing query: {user_query}")
         
-    Returns:
-        str: The extracted text response
-    """
-    try:
-        return response['candidates'][0]['content']['parts'][0]['text']
-    except (KeyError, IndexError) as e:
-        print(f"Error extracting response text: {e}")
-        return "Sorry, I couldn't process that response."
+        if not user_query:
+            logger.error("Empty query provided")
+            return jsonify({
+                'error': 'Empty query provided',
+                'status': 'error'
+            }), 400, get_cors_headers()
 
-def main():
-    print("\nWelcome to the ISS Query Assistant!")
-    print("You can ask questions about the ISS. Type 'exit' or 'quit' to end the session.\n")
-    
-    while True:
+        # Get API key
+        logger.info("Getting Gemini API key")
+        api_key = get_gemini_api_key()
+        
+        # Query Gemini
+        logger.info("Querying Gemini API")
+        response = query_gemini(user_query, api_key)
+        answer = extract_response_text(response)
+        logger.info(f"Raw Gemini response: {answer}")
+        
+        # Parse the response to get the action and data
         try:
-            # Get user input
-            user_question = input("\nAsk a question about the ISS: ").strip()
+            import json
+            logger.info("Parsing Gemini response")
+            response_data = json.loads(answer.strip('`json\n'))
+            message = response_data.get('message', '')
+            action = response_data.get('action', '')
+            data = response_data.get('data', {})
+            logger.info(f"Parsed response - Message: {message}, Action: {action}, Data: {data}")
             
-            # Check if user wants to exit
-            if user_question.lower() in ['exit', 'quit']:
-                print("\nGoodbye! Thanks for using the ISS Query Assistant.")
-                break
+            # If this is a database query, execute it
+            if action == 'query_db' and data:
+                try:
+                    logger.info(f"Executing database query with data: {data}")
+                    # Execute the query
+                    db_response = query_database(data, None)
+                    logger.info(f"Database response received: {db_response}")
+                    
+                    # Format the response
+                    db_message = db_response  # Already formatted by query_database
+                    logger.info(f"Formatted database message: {db_message}")
+                    
+                    # Prepare the response JSON
+                    response_json = {
+                        "message": db_message,
+                        "action": "query_db",
+                        "data": data
+                    }
+                    logger.info(f"Preparing response JSON: {response_json}")
+                    
+                    # Return the database results in the main response
+                    return jsonify({
+                        'response': f'```json\n{json.dumps(response_json)}\n```\n',
+                        'status': 'success'
+                    }), 200, get_cors_headers()
+                    
+                except Exception as db_error:
+                    logger.error(f'Database query error: {str(db_error)}')
+                    logger.error(f'Error type: {type(db_error)}')
+                    logger.error(f'Error args: {db_error.args}')
+                    if hasattr(db_error, '__traceback__'):
+                        import traceback
+                        logger.error(f'Traceback: {traceback.format_exc()}')
+                    
+                    error_json = {
+                        "message": "I encountered an issue retrieving that information. Please try again!",
+                        "action": "query_db",
+                        "data": data
+                    }
+                    logger.info(f"Preparing error response JSON: {error_json}")
+                    
+                    return jsonify({
+                        'response': f'```json\n{json.dumps(error_json)}\n```\n',
+                        'status': 'success'
+                    }), 200, get_cors_headers()
             
-            # Skip empty questions
-            if not user_question:
-                print("Please ask a question!")
-                continue
+            # If this is a feedback submission, store it
+            elif action == 'store_feedback' and data:
+                try:
+                    logger.info(f"Attempting to store feedback: {data}")
+                    store_feedback(data, None)
+                    logger.info("Feedback stored successfully")
+                    
+                    # Return success message
+                    return jsonify({
+                        'response': answer,
+                        'status': 'success'
+                    }), 200, get_cors_headers()
+                    
+                except Exception as feedback_error:
+                    logger.error(f'Feedback storage error: {str(feedback_error)}')
+                    logger.error(f'Error type: {type(feedback_error)}')
+                    logger.error(f'Error args: {feedback_error.args}')
+                    if hasattr(feedback_error, '__traceback__'):
+                        import traceback
+                        logger.error(f'Traceback: {traceback.format_exc()}')
+                    
+                    error_json = {
+                        "message": "I encountered an issue storing your feedback. Please try again!",
+                        "action": "store_feedback",
+                        "data": data
+                    }
+                    logger.info(f"Preparing feedback error response JSON: {error_json}")
+                    
+                    return jsonify({
+                        'response': f'```json\n{json.dumps(error_json)}\n```\n',
+                        'status': 'success'
+                    }), 200, get_cors_headers()
             
-            # Get and display response
-            response = query_gemini(user_question)
-            answer = extract_response_text(response)
-            print(f"\nAnswer: {answer}")
+            # For non-database queries, just return the AI response
+            logger.info("Returning direct AI response")
+            return jsonify({
+                'response': answer,
+                'status': 'success'
+            }), 200, get_cors_headers()
             
-        except Exception as e:
-            print(f"\nError: {e}")
-            print("Please try asking another question.")
-
-if __name__ == "__main__":
-    main()
+        except Exception as parse_error:
+            logger.error(f'Error parsing Gemini response: {str(parse_error)}')
+            return jsonify({
+                'error': 'Error processing the response',
+                'status': 'error'
+            }), 500, get_cors_headers()
+            
+    except Exception as e:
+        logger.error(f'Unexpected error: {str(e)}')
+        return jsonify({
+            'error': 'Internal server error',
+            'status': 'error'
+        }), 500, get_cors_headers()

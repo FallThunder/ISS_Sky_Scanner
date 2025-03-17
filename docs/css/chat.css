@@ -57,6 +57,7 @@
     flex-direction: column;
     gap: 16px;
     background: #1e1e1e;
+    margin-right: 0;
 }
 
 .chat-message {
@@ -118,6 +119,13 @@
     background: #2d2d2d;
     color: #e0e0e0;
     line-height: 24px;
+    scrollbar-width: none; /* Firefox */
+    -ms-overflow-style: none; /* IE and Edge */
+}
+
+/* Hide Webkit scrollbar but keep functionality */
+#messageInput::-webkit-scrollbar {
+    display: none;
 }
 
 #messageInput:focus {
@@ -209,20 +217,34 @@
     50% { transform: translateY(-5px); }
 }
 
-/* Scrollbar styling */
+/* Webkit Scrollbar */
 .chat-history::-webkit-scrollbar {
     width: 6px;
+    height: 6px;
 }
 
 .chat-history::-webkit-scrollbar-track {
     background: #1e1e1e;
+    border-radius: 12px;
 }
 
 .chat-history::-webkit-scrollbar-thumb {
-    background: #404040;
-    border-radius: 3px;
+    background-color: #333333;
+    border-radius: 12px;
+    border: none;
+    min-height: 40px;
 }
 
 .chat-history::-webkit-scrollbar-thumb:hover {
-    background: #505050;
+    background-color: #404040;
+}
+
+.chat-history::-webkit-scrollbar-corner {
+    background: #1e1e1e;
+}
+
+/* Firefox Scrollbar */
+.chat-history {
+    scrollbar-width: thin;
+    scrollbar-color: #333333 #1e1e1e;
 }

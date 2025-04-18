@@ -68,7 +68,33 @@ function formatCoordinates(lat, lon) {
 
 // Format timestamp to local time
 function formatTimestamp(timestamp) {
-    return new Date(timestamp).toLocaleString();
+    const date = new Date(timestamp);
+    
+    // Get local time with date and timezone name
+    const localTimeStr = date.toLocaleString('en-US', {
+        year: 'numeric',
+        month: 'numeric',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: true,
+        timeZoneName: 'short'
+    });
+
+    // Get UTC date and time
+    const utcStr = date.toLocaleString('en-US', {
+        year: 'numeric',
+        month: 'numeric',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: true,
+        timeZone: 'UTC'
+    }) + ' UTC';
+
+    return `${localTimeStr}\n\n${utcStr}`;
 }
 
 // Start cooldown timer
@@ -121,7 +147,7 @@ function updateUI(data) {
     if (data.latitude && data.longitude) {
         // Update text displays
         coordinates.textContent = `${formatCoordinates(parseFloat(data.latitude), parseFloat(data.longitude))}
-            ${data.location_details ? `\n${data.location_details}` : ''}`;
+            ${data.location ? `\n${data.location}` : ''}`;
         time.textContent = formatTimestamp(data.timestamp);
         fact.textContent = data.fun_fact || 'No fun fact available for this location.';
 
@@ -161,8 +187,8 @@ function updateUI(data) {
         map.panTo([lat, targetLng]);
         
         // Add popup with header and location name
-        if (data.location_details) {
-            issMarker.bindPopup(`<b>Current ISS Location:</b><br>${data.location_details}`).openPopup();
+        if (data.location) {
+            issMarker.bindPopup(`<b>Current ISS Location:</b><br>${data.location}`).openPopup();
         }
     } else {
         console.error('Unexpected data structure:', data);

@@ -33,10 +33,8 @@ class LocationHistoryManager {
                     throw new Error('Invalid data format from API');
                 }
                 
-                // Sort locations by timestamp to ensure correct order
-                this.locations = data.locations.sort((a, b) => 
-                    new Date(b.timestamp) - new Date(a.timestamp)
-                );
+                // Sort locations by timestamp to ensure correct order (newest first)
+                this.locations = this.sortLocations(data.locations);
                 
                 this.saveToStorage();
                 return true;
@@ -47,14 +45,31 @@ class LocationHistoryManager {
         return true;
     }
 
+    // Sort locations by timestamp (newest first)
+    sortLocations(locations) {
+        return locations.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    }
+
     // Add a new location and remove the oldest if we exceed MAX_ENTRIES
     addLocation(location) {
-        // Add new location at the start (newest first)
-        this.locations.unshift(location);
-        
-        // Remove oldest entry if we exceed MAX_ENTRIES
-        if (this.locations.length > MAX_ENTRIES) {
-            this.locations.pop();
+        // Check if we already have this timestamp
+        const existingIndex = this.locations.findIndex(loc => 
+            new Date(loc.timestamp).getTime() === new Date(location.timestamp).getTime()
+        );
+
+        if (existingIndex !== -1) {
+            // Update existing location
+            this.locations[existingIndex] = location;
+        } else {
+            // Add new location
+            this.locations.push(location);
+            // Re-sort to ensure newest first
+            this.locations = this.sortLocations(this.locations);
+            
+            // Remove oldest entries if we exceed MAX_ENTRIES
+            if (this.locations.length > MAX_ENTRIES) {
+                this.locations = this.locations.slice(0, MAX_ENTRIES);
+            }
         }
         
         this.saveToStorage();

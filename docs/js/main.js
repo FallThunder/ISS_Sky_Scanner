@@ -1,5 +1,6 @@
 import config from './config.js';
 import LocationHistoryManager from './locationHistory.js';
+import HistorySlider from './historySlider.js';
 
 // Initialize the application when the page loads
 window.addEventListener('load', init);
@@ -12,11 +13,17 @@ const COOLDOWN_DURATION = 15; // seconds
 
 // Initialize location history manager
 const locationHistory = new LocationHistoryManager();
+let historySlider = null;
 
 // Initialize the application
 async function init() {
     initMap();
     await locationHistory.initializeHistory();
+    
+    // Initialize history slider with callback to update map
+    historySlider = new HistorySlider(locationHistory, updateMapFromHistory);
+    historySlider.initialize();
+    
     await fetchISSData();
     
     // Add refresh button handler
@@ -28,8 +35,11 @@ function initMap() {
     // Initialize map with dark mode and world wrap
     map = L.map('map', {
         worldCopyJump: true,  // Makes panning across the dateline smoother
-        maxBoundsViscosity: 1.0  // Ensures smooth scrolling at edges
-    }).setView([0, 0], 2);
+        maxBoundsViscosity: 1.0,  // Ensures smooth scrolling at edges
+        renderer: L.canvas({ antimeridian: true }),  // Enable multiple instances of markers
+        center: [0, 0],
+        zoom: 2
+    });
 
     L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
         attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, © <a href="https://carto.com/attributions">CARTO</a>',
@@ -216,6 +226,84 @@ function startDataAgeMonitor(timestamp) {
     }, 1000);
 }
 
+// Update map and info from history location
+function updateMapFromHistory(location) {
+    if (!location) return;
+    
+    // Only update the time display in the slider
+    const timeDisplay = document.getElementById('time-display');
+    const date = new Date(location.timestamp);
+    timeDisplay.textContent = date.toLocaleString();
+    
+    // Update map marker
+    const lat = parseFloat(location.latitude);
+    const lon = parseFloat(location.longitude);
+    
+    // Remove existing markers if they exist
+    if (issMarker) {
+        if (Array.isArray(issMarker)) {
+            issMarker.forEach(marker => map.removeLayer(marker));
+        } else {
+            map.removeLayer(issMarker);
+        }
+    }
+
+    // Create icon
+    const issIcon = L.icon({
+        iconUrl: './assets/iss-icon.svg',
+        iconSize: [32, 32],
+        iconAnchor: [16, 16],
+        popupAnchor: [0, -16]
+    });
+
+    // Get map bounds
+    const bounds = map.getBounds();
+    const west = bounds.getWest();
+    const east = bounds.getEast();
+    const center = bounds.getCenter();
+
+    // Calculate base longitude that's west of the current view with extra buffer
+    let baseLon = lon;
+    while (baseLon > west - 360) baseLon -= 360;  // Add one more world width to the west
+
+    // Create array to hold markers
+    issMarker = [];
+
+    // Check if this is the most recent location
+    const slider = document.getElementById('history-slider');
+    const isCurrentLocation = parseInt(slider.value) === parseInt(slider.max);
+    console.log('Slider value:', slider.value, 'Max:', slider.max, 'Is current:', isCurrentLocation);
+    const popupPrefix = isCurrentLocation ? 'ISS Location' : 'Historical Location';
+
+    // Add markers for all visible longitudes with extra buffer
+    for (let currLon = baseLon; currLon <= east + 720; currLon += 360) {  // Add two world widths to the east
+        const marker = L.marker([lat, currLon], { icon: issIcon }).addTo(map);
+        if (location.location) {
+            const flag = getCountryFlag(location.location, location.country_code);
+            const flagText = flag ? ` ${flag}` : '';
+            marker.bindPopup(`<b>${popupPrefix}:</b><br>${location.location}${flagText}`);
+        }
+        issMarker.push(marker);
+    }
+
+    // Find the closest marker to center for panning
+    let targetLng = lon;
+    while (targetLng < center.lng - 180) targetLng += 360;
+    while (targetLng > center.lng + 180) targetLng -= 360;
+    
+    map.panTo([lat, targetLng]);
+    
+    // Open popup on the marker closest to center
+    if (location.location && issMarker.length > 0) {
+        const closestMarker = issMarker.reduce((prev, curr) => {
+            const prevDist = Math.abs(prev.getLatLng().lng - center.lng);
+            const currDist = Math.abs(curr.getLatLng().lng - center.lng);
+            return currDist < prevDist ? curr : prev;
+        });
+        closestMarker.openPopup();
+    }
+}
+
 // Update the UI with ISS data
 function updateUI(data) {
     const coordinates = document.getElementById('coordinates');
@@ -228,7 +316,8 @@ function updateUI(data) {
             timestamp: data.timestamp,
             latitude: data.latitude,
             longitude: data.longitude,
-            location: data.location
+            location: data.location,
+            fun_fact: data.fun_fact
         });
 
         // Update text displays
@@ -240,7 +329,7 @@ function updateUI(data) {
         const lat = parseFloat(data.latitude);
         const lon = parseFloat(data.longitude);
         
-        // Create a custom icon for the ISS using the SVG file
+        // Create a custom icon for the ISS
         const issIcon = L.icon({
             iconUrl: './assets/iss-icon.svg',
             iconSize: [32, 32],
@@ -248,7 +337,7 @@ function updateUI(data) {
             popupAnchor: [0, -16]
         });
         
-        // Remove existing marker if it exists
+        // Remove existing markers if they exist
         if (issMarker) {
             if (Array.isArray(issMarker)) {
                 issMarker.forEach(marker => map.removeLayer(marker));
@@ -256,28 +345,46 @@ function updateUI(data) {
                 map.removeLayer(issMarker);
             }
         }
-        
-        // Add marker and center map
-        issMarker = L.marker([lat, lon], { 
-            icon: issIcon,
-            // Enable marker wrapping for better visibility
-            wrapLatLng: true
-        }).addTo(map);
-        
-        // When centering on the ISS, ensure we use the closest instance of the marker
+
+        // Get map bounds
         const bounds = map.getBounds();
+        const west = bounds.getWest();
+        const east = bounds.getEast();
         const center = bounds.getCenter();
+
+        // Calculate base longitude that's west of the current view with extra buffer
+        let baseLon = lon;
+        while (baseLon > west - 360) baseLon -= 360;  // Add one more world width to the west
+
+        // Create array to hold markers
+        issMarker = [];
+
+        // Add markers for all visible longitudes with extra buffer
+        for (let currLon = baseLon; currLon <= east + 720; currLon += 360) {  // Add two world widths to the east
+            const marker = L.marker([lat, currLon], { icon: issIcon }).addTo(map);
+            if (data.location) {
+                const flag = getCountryFlag(data.location, data.country_code);
+                const flagText = flag ? ` ${flag}` : '';
+                marker.bindPopup(`<b>ISS Location:</b><br>${data.location}${flagText}`);
+            }
+            issMarker.push(marker);
+        }
+
+        // Find the closest marker to center for panning
         let targetLng = lon;
-        
-        // Adjust longitude to use the closest wrapped position
         while (targetLng < center.lng - 180) targetLng += 360;
         while (targetLng > center.lng + 180) targetLng -= 360;
         
         map.panTo([lat, targetLng]);
         
-        // Add popup with header and location name
-        if (data.location) {
-            issMarker.bindPopup(`<b>Current ISS Location:</b><br>${data.location}`).openPopup();
+        // Open popup on the marker closest to center
+        if (data.location && issMarker.length > 0) {
+            const closestMarker = issMarker.reduce((prev, curr) => {
+                const prevDist = Math.abs(prev.getLatLng().lng - center.lng);
+                const currDist = Math.abs(curr.getLatLng().lng - center.lng);
+                return currDist < prevDist ? curr : prev;
+            });
+            closestMarker.openPopup();
         }
     } else {
         console.error('Unexpected data structure:', data);
@@ -321,6 +428,12 @@ async function fetchISSData() {
         const data = await response.json();
         console.log('Received data:', data);
         updateUI(data);
+        
+        // Reset slider to current position (now on the right)
+        const slider = document.getElementById('history-slider');
+        console.log('Resetting slider - Current max:', slider.max);
+        historySlider.setSliderValue(slider.max);
+        
         // Hide any previous error messages
         document.getElementById('error').style.display = 'none';
         
@@ -341,17 +454,15 @@ async function fetchISSData() {
 // Convert country code to flag emoji
 function getCountryFlag(location, countryCode) {
     try {
-        // If we have a country code, use it directly
-        if (countryCode) {
-            // Convert country code to flag emoji (using regional indicator symbols)
-            const codePoints = Array.from(countryCode)
-                .map(char => 127397 + char.charCodeAt());
-            return String.fromCodePoint(...codePoints);
-        }
-        
         // Skip if it's an ocean or sea
         if (location.includes('Ocean') || location.includes('Sea')) {
             return '';
+        }
+
+        // If we have a country code, use it directly
+        if (countryCode) {
+            // Convert country code to flag emoji (using regional indicator symbols)
+            return String.fromCodePoint(...Array.from(countryCode).map(char => 127397 + char.charCodeAt()));
         }
         
         return ''; // Return empty string if no country code

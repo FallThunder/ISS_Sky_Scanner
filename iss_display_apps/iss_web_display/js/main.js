@@ -1,22 +1,19 @@
 import config from './config.js';
 import LocationHistoryManager from './locationHistory.js';
-import HistorySlider from './historySlider.js';
 
 // Initialize map
 let map = null;
-let issMarkers = []; // Array to hold multiple ISS markers
+let issMarker = null;
 let isRefreshCooldown = false;
 const COOLDOWN_DURATION = 15; // seconds
 
-// Initialize location history manager and slider
+// Initialize location history manager
 const locationHistory = new LocationHistoryManager();
-let historySlider = null;
 
 // Initialize the application
 async function init() {
     initMap();
     await locationHistory.initializeHistory();
-    historySlider = new HistorySlider(locationHistory, map, issMarkers);
     await fetchISSData();
     
     // Add refresh button handler
@@ -67,8 +64,8 @@ function initMap() {
             </a>
         `;
         div.onclick = function() {
-            if (issMarkers.length > 0) {
-                map.panTo(issMarkers[1].getLatLng());
+            if (issMarker) {
+                map.panTo(issMarker.getLatLng());
             }
             return false;
         };
@@ -156,44 +153,6 @@ function startCooldown() {
     }, 1000);
 }
 
-function createWrappedISSMarkers(lat, lon) {
-    // Create a custom icon for the ISS using the SVG file
-    const issIcon = L.icon({
-        iconUrl: './assets/iss-icon.svg',
-        iconSize: [32, 32],
-        iconAnchor: [16, 16],
-        popupAnchor: [0, -16]
-    });
-
-    // Remove existing markers
-    issMarkers.forEach(marker => {
-        if (marker) {
-            map.removeLayer(marker);
-        }
-    });
-    issMarkers = [];
-
-    // Get the current map bounds
-    const bounds = map.getBounds();
-    const center = bounds.getCenter();
-
-    // Calculate the base longitude relative to the center
-    let baseLon = lon;
-    while (baseLon < center.lng - 180) baseLon += 360;
-    while (baseLon > center.lng + 180) baseLon -= 360;
-
-    // Create markers with offsets relative to the adjusted base longitude
-    [-1, 0, 1].forEach(offset => {
-        const wrappedLon = baseLon + (offset * 360);
-        const marker = L.marker([lat, wrappedLon], {
-            icon: issIcon
-        }).addTo(map);
-        issMarkers.push(marker);
-    });
-
-    return issMarkers;
-}
-
 // Update the UI with ISS data
 function updateUI(data) {
     const coordinates = document.getElementById('coordinates');
@@ -220,14 +179,25 @@ function updateUI(data) {
         const lat = parseFloat(data.latitude);
         const lon = parseFloat(data.longitude);
         
-        // Create wrapped ISS markers
-        const markers = createWrappedISSMarkers(lat, lon);
+        // Create a custom icon for the ISS using the SVG file
+        const issIcon = L.icon({
+            iconUrl: './assets/iss-icon.svg',
+            iconSize: [32, 32],
+            iconAnchor: [16, 16],
+            popupAnchor: [0, -16]
+        });
         
-        // Update the history slider with the new ISS markers
-        if (historySlider) {
-            historySlider.updateISSMarker(markers[1]); // Use the center marker (index 1) as the main marker
-            historySlider.updateSliderRange();
+        // Remove existing marker if it exists
+        if (issMarker) {
+            map.removeLayer(issMarker);
         }
+        
+        // Add marker and center map
+        issMarker = L.marker([lat, lon], { 
+            icon: issIcon,
+            // Enable marker wrapping for better visibility
+            wrapLatLng: true
+        }).addTo(map);
         
         // When centering on the ISS, ensure we use the closest instance of the marker
         const bounds = map.getBounds();
@@ -240,18 +210,9 @@ function updateUI(data) {
         
         map.panTo([lat, targetLng]);
         
-        // Add popup with header and location name to all markers
+        // Add popup with header and location name
         if (data.location) {
-            const popupContent = `<b>Current ISS Location:</b><br>${data.location}`;
-            markers.forEach(marker => {
-                marker.bindPopup(popupContent);
-            });
-            // Open popup on the marker closest to the center
-            const centerMarker = markers.find(m => {
-                const mLng = m.getLatLng().lng;
-                return Math.abs(mLng - center.lng) <= 180;
-            }) || markers[1];
-            centerMarker.openPopup();
+            issMarker.bindPopup(`<b>Current ISS Location:</b><br>${data.location}`).openPopup();
         }
     } else {
         console.error('Unexpected data structure:', data);

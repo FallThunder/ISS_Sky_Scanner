@@ -1,10 +1,28 @@
 import config from './config.js';
+import LocationHistoryManager from './locationHistory.js';
+
+// Initialize the application when the page loads
+window.addEventListener('load', init);
 
 // Initialize map
 let map = null;
 let issMarker = null;
 let isRefreshCooldown = false;
 const COOLDOWN_DURATION = 15; // seconds
+
+// Initialize location history manager
+const locationHistory = new LocationHistoryManager();
+
+// Initialize the application
+async function init() {
+    initMap();
+    await locationHistory.initializeHistory();
+    await fetchISSData();
+    
+    // Add refresh button handler
+    const refreshButton = document.getElementById('refresh');
+    refreshButton.addEventListener('click', fetchISSData);
+}
 
 function initMap() {
     // Initialize map with dark mode and world wrap
@@ -68,7 +86,33 @@ function formatCoordinates(lat, lon) {
 
 // Format timestamp to local time
 function formatTimestamp(timestamp) {
-    return new Date(timestamp).toLocaleString();
+    const date = new Date(timestamp);
+    
+    // Get local time with date and timezone name
+    const localTimeStr = date.toLocaleString('en-US', {
+        year: 'numeric',
+        month: 'numeric',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: true,
+        timeZoneName: 'short'
+    });
+
+    // Get UTC date and time
+    const utcStr = date.toLocaleString('en-US', {
+        year: 'numeric',
+        month: 'numeric',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: true,
+        timeZone: 'UTC'
+    }) + ' UTC';
+
+    return `${localTimeStr}\n\n${utcStr}`;
 }
 
 // Start cooldown timer
@@ -177,25 +221,21 @@ function updateUI(data) {
     const coordinates = document.getElementById('coordinates');
     const time = document.getElementById('time');
     const fact = document.getElementById('fact');
-    const statusMessage = document.getElementById('time-status');
     
     if (data.latitude && data.longitude) {
-        // Get flag emoji if location is over land
-        const flag = data.location_details ? getCountryFlag(data.location_details, data.country_code) : '';
-        
-        // Update text displays with flag on a new line
-        coordinates.textContent = `${formatCoordinates(parseFloat(data.latitude), parseFloat(data.longitude))}${data.location_details ? `\n${data.location_details}\n${flag}` : ''}`;
+        // Add the new location to history
+        locationHistory.addLocation({
+            timestamp: data.timestamp,
+            latitude: data.latitude,
+            longitude: data.longitude,
+            location: data.location
+        });
+
+        // Update text displays
+        coordinates.textContent = `${formatCoordinates(parseFloat(data.latitude), parseFloat(data.longitude))}${data.location ? `\n\n${data.location}` : ''}`;
         time.textContent = formatTimestamp(data.timestamp);
         fact.textContent = data.fun_fact || 'No fun fact available for this location.';
 
-        // Reset any existing status
-        document.getElementById('timestamp').classList.remove('stale');
-        document.getElementById('timestamp').classList.remove('update-available');
-        statusMessage.textContent = '';
-        
-        // Start monitoring data age
-        startDataAgeMonitor(data.timestamp);
-        
         // Update map
         const lat = parseFloat(data.latitude);
         const lon = parseFloat(data.longitude);
@@ -208,7 +248,7 @@ function updateUI(data) {
             popupAnchor: [0, -16]
         });
         
-        // Remove existing markers if they exist
+        // Remove existing marker if it exists
         if (issMarker) {
             if (Array.isArray(issMarker)) {
                 issMarker.forEach(marker => map.removeLayer(marker));
@@ -217,53 +257,27 @@ function updateUI(data) {
             }
         }
         
-        // Get map bounds
+        // Add marker and center map
+        issMarker = L.marker([lat, lon], { 
+            icon: issIcon,
+            // Enable marker wrapping for better visibility
+            wrapLatLng: true
+        }).addTo(map);
+        
+        // When centering on the ISS, ensure we use the closest instance of the marker
         const bounds = map.getBounds();
         const center = bounds.getCenter();
+        let targetLng = lon;
         
-        // Calculate equivalent positions
-        const copies = [];
-        let baseLng = lon;
+        // Adjust longitude to use the closest wrapped position
+        while (targetLng < center.lng - 180) targetLng += 360;
+        while (targetLng > center.lng + 180) targetLng -= 360;
         
-        // Normalize the base longitude to be within [-180, 180]
-        while (baseLng > 180) baseLng -= 360;
-        while (baseLng < -180) baseLng += 360;
+        map.panTo([lat, targetLng]);
         
-        // Add positions for the entire visible range plus buffer
-        for (let lng = baseLng - 720; lng <= baseLng + 720; lng += 360) {
-            copies.push([lat, lng]);
-        }
-        
-        // Create markers for all positions
-        issMarker = copies.map(pos => {
-            const marker = L.marker(pos, {
-                icon: issIcon
-            }).addTo(map);
-            
-            // Add popup to each marker
-            if (data.location_details) {
-                marker.bindPopup(`<b>Current ISS Location:</b><br>${data.location_details} ${flag}`);
-            }
-            
-            return marker;
-        });
-        
-        // Find the closest copy to the center for panning
-        let closestCopy = copies.reduce((prev, curr) => {
-            const prevDist = Math.abs(prev[1] - center.lng);
-            const currDist = Math.abs(curr[1] - center.lng);
-            return prevDist < currDist ? prev : curr;
-        });
-        
-        map.panTo(closestCopy);
-        
-        // Open popup on the closest marker
-        const closestMarker = issMarker.find(marker => 
-            marker.getLatLng().lat === closestCopy[0] && 
-            marker.getLatLng().lng === closestCopy[1]
-        );
-        if (closestMarker) {
-            closestMarker.openPopup();
+        // Add popup with header and location name
+        if (data.location) {
+            issMarker.bindPopup(`<b>Current ISS Location:</b><br>${data.location}`).openPopup();
         }
     } else {
         console.error('Unexpected data structure:', data);
@@ -323,16 +337,6 @@ async function fetchISSData() {
         refreshButton.disabled = false;
     }
 }
-
-// Initialize map and fetch data
-document.addEventListener('DOMContentLoaded', () => {
-    initMap();
-    fetchISSData();
-    
-    // Add refresh button handler
-    const refreshButton = document.getElementById('refresh');
-    refreshButton.addEventListener('click', fetchISSData);
-});
 
 // Convert country code to flag emoji
 function getCountryFlag(location, countryCode) {

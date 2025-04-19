@@ -77,4 +77,4 @@ class LocationHistoryManager {
     }
 }
 
-export default LocationHistoryManager;
+export default LocationHistoryManager; 

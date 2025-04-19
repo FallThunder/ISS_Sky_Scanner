@@ -3,6 +3,7 @@ from flask import jsonify, request
 import logging
 from datetime import datetime, timedelta
 from utils import query_time_range
+from flask_cors import CORS
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -19,6 +20,21 @@ def iss_api_query_time_range(request):
     Returns:
         flask.Response: JSON response containing the ISS location data for the time range
     """
+    # Handle CORS
+    if request.method == 'OPTIONS':
+        headers = {
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'GET',
+            'Access-Control-Allow-Headers': 'Content-Type',
+            'Access-Control-Max-Age': '3600'
+        }
+        return ('', 204, headers)
+
+    # Set CORS headers for the main request
+    headers = {
+        'Access-Control-Allow-Origin': '*'
+    }
+    
     try:
         # Get minutes parameter, default to 60 minutes (1 hour), cap at 1440 (24 hours)
         try:
@@ -27,7 +43,7 @@ def iss_api_query_time_range(request):
             return jsonify({
                 'error': 'Minutes parameter must be an integer',
                 'status': 'error'
-            }), 400
+            }), 400, headers
 
         # Query the data
         results = query_time_range(minutes=minutes)
@@ -36,7 +52,7 @@ def iss_api_query_time_range(request):
             return jsonify({
                 'error': 'No location data found for the specified time range',
                 'status': 'error'
-            }), 404
+            }), 404, headers
 
         # Return the data
         response_data = {
@@ -46,7 +62,7 @@ def iss_api_query_time_range(request):
             'status': 'success'
         }
 
-        return jsonify(response_data), 200
+        return jsonify(response_data), 200, headers
 
     except Exception as e:
         logger.error(f"Unexpected error in main function: {str(e)}")
@@ -54,4 +70,4 @@ def iss_api_query_time_range(request):
             'error': 'Internal server error',
             'message': str(e),
             'status': 'error'
-        }), 500
+        }), 500, headers

@@ -37,6 +37,14 @@
             <div class="card" id="error" style="display: none;">
                 <p class="error-message"></p>
             </div>
+            <div class="history-slider-container">
+                <div class="slider-labels">
+                    <span>24 hours ago</span>
+                    <span>Current</span>
+                </div>
+                <input type="range" id="history-slider" min="0" max="287" value="0" class="slider">
+                <div id="slider-timestamp" class="slider-timestamp">Current Time</div>
+            </div>
             <div class="refresh-container">
                 <button id="refresh" class="refresh-button">Refresh Data</button>
                 <div class="countdown-container">

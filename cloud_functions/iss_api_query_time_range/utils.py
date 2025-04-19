@@ -38,11 +38,16 @@ def query_time_range(minutes: int = 60) -> List[Dict[str, Any]]:
         # Execute query
         docs = query.stream()
         
-        # Convert to list of dictionaries
+        # Convert to list of dictionaries with only required fields
         results = []
         for doc in docs:
             data = doc.to_dict()
-            results.append(data)
+            results.append({
+                'timestamp': data['timestamp'],
+                'latitude': data['latitude'],
+                'longitude': data['longitude'],
+                'location': data.get('location', '')  # Using get() with default empty string
+            })
             
         logger.info(f"Found {len(results)} records in the last {minutes} minutes")
         return results

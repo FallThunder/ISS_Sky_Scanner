@@ -34,7 +34,7 @@ class HistorySlider {
         this.updateDisplay();
     }
 
-    setSliderValue(value) {
+    setSliderValue(value, skipMapUpdate = false) {
         if (this.isUpdating) return;
         this.isUpdating = true;
         
@@ -42,10 +42,21 @@ class HistorySlider {
         const maxValue = parseInt(slider.max);
         value = Math.min(Math.max(parseInt(value), 0), maxValue);
         
-        console.log('Setting slider value:', value, 'Max:', maxValue);
+        console.log('Setting slider value:', value, 'Max:', maxValue, 'Skip map update:', skipMapUpdate);
         slider.value = value;
         this.currentIndex = this.getInvertedIndex(value);
-        this.updateDisplay();
+        
+        if (!skipMapUpdate) {
+            this.updateDisplay();
+        } else {
+            // Just update the time display without updating the map
+            const location = this.locationHistory.getLocationAt(this.currentIndex);
+            if (location) {
+                const timeDisplay = document.getElementById('time-display');
+                const date = new Date(location.timestamp);
+                timeDisplay.textContent = date.toLocaleString();
+            }
+        }
         
         this.isUpdating = false;
     }
@@ -53,7 +64,10 @@ class HistorySlider {
     updateSliderRange() {
         const slider = document.getElementById('history-slider');
         const locations = this.locationHistory.getLocations();
+        const oldMax = slider.max;
         slider.max = locations.length - 1;
+        
+        console.log('Updated slider range - Old max:', oldMax, 'New max:', slider.max, 'Locations count:', locations.length);
         
         // Only set the value if it's not already set or is invalid
         if (!slider.value || slider.value > slider.max) {
@@ -80,6 +94,42 @@ class HistorySlider {
             // Update map and info through callback
             this.updateMapCallback(location);
         }
+    }
+
+    // Get current slider position info for data management
+    getCurrentSliderInfo() {
+        const slider = document.getElementById('history-slider');
+        const location = this.locationHistory.getLocationAt(this.currentIndex);
+        const isAtOldest = parseInt(slider.value) === 0; // 0 is oldest position (leftmost), max is newest (rightmost)
+        
+        console.log('getCurrentSliderInfo - slider.value:', slider.value, 'slider.max:', slider.max, 'isAtOldest:', isAtOldest);
+        console.log('Current location timestamp:', location ? location.timestamp : 'null');
+        
+        return {
+            timestamp: location ? location.timestamp : null,
+            isAtOldest: isAtOldest,
+            currentIndex: this.currentIndex,
+            sliderValue: parseInt(slider.value),
+            sliderMax: parseInt(slider.max)
+        };
+    }
+
+    // Find and set slider to a specific timestamp
+    setSliderToTimestamp(targetTimestamp) {
+        const locations = this.locationHistory.getLocations();
+        const targetIndex = locations.findIndex(loc => 
+            new Date(loc.timestamp).getTime() === new Date(targetTimestamp).getTime()
+        );
+        
+        if (targetIndex !== -1) {
+            const sliderValue = locations.length - 1 - targetIndex;
+            this.setSliderValue(sliderValue);
+            console.log('Set slider to timestamp:', targetTimestamp, 'at index:', targetIndex, 'slider value:', sliderValue);
+            return true;
+        }
+        
+        console.log('Could not find timestamp in history:', targetTimestamp);
+        return false;
     }
 }
 

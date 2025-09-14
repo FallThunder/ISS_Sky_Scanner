@@ -9,7 +9,9 @@
           integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
           crossorigin=""/>
     <!-- Font Awesome -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css"
+          integrity="sha512-9usAa10IRO0HhonpyAIVpjrylPvoDwiPUiKdWk5t3PyolY1cOd4DSE0Ga+ri4AuTroPR5aQvXU9xC6qOPnzFeg=="
+          crossorigin="anonymous" referrerpolicy="no-referrer" />
     <!-- Our CSS -->
     <link rel="stylesheet" href="./css/styles.css">
     <link rel="stylesheet" href="./css/chat.css">
@@ -57,10 +59,9 @@
                 <p class="error-message"></p>
             </div>
             <div class="refresh-container">
-                <button id="refresh" class="refresh-button">Refresh Data</button>
-                <div class="countdown-container">
-                    <div id="countdown-bar" class="countdown-bar"></div>
-                    <div id="countdown-text" class="countdown-text">15.0s</div>
+                <div class="auto-refresh-indicator">
+                    <i class="fas fa-sync-alt"></i>
+                    <span>Auto-refreshing every 5 minutes</span>
                 </div>
             </div>
         </main>

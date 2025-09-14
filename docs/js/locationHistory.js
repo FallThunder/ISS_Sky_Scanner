@@ -36,6 +36,15 @@ class LocationHistoryManager {
                 // Sort locations by timestamp to ensure correct order (newest first)
                 this.locations = this.sortLocations(data.locations);
                 
+                // Trim to exactly 24 hours if we have more data
+                if (this.locations.length > MAX_ENTRIES) {
+                    this.locations = this.locations.slice(0, MAX_ENTRIES);
+                }
+                
+                console.log('Initialized with', this.locations.length, 'locations');
+                console.log('Newest:', this.locations[0]?.timestamp);
+                console.log('Oldest:', this.locations[this.locations.length - 1]?.timestamp);
+                
                 this.saveToStorage();
                 return true;
             } catch (error) {
@@ -51,7 +60,19 @@ class LocationHistoryManager {
     }
 
     // Add a new location and remove the oldest if we exceed MAX_ENTRIES
-    addLocation(location) {
+    addLocation(location, sliderCallback = null) {
+        // Get current slider position info before making changes
+        let currentTimestamp = null;
+        let wasAtOldestPosition = false;
+        
+        if (sliderCallback) {
+            const sliderInfo = sliderCallback();
+            if (sliderInfo) {
+                currentTimestamp = sliderInfo.timestamp;
+                wasAtOldestPosition = sliderInfo.isAtOldest;
+            }
+        }
+
         // Check if we already have this timestamp
         const existingIndex = this.locations.findIndex(loc => 
             new Date(loc.timestamp).getTime() === new Date(location.timestamp).getTime()
@@ -73,6 +94,13 @@ class LocationHistoryManager {
         }
         
         this.saveToStorage();
+        
+        // Return info for slider positioning
+        return {
+            currentTimestamp,
+            wasAtOldestPosition,
+            newLocationsCount: this.locations.length
+        };
     }
 
     // Get all stored locations

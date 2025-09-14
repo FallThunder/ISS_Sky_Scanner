@@ -1,6 +1,19 @@
 const changelog = {
     versions: [
         {
+            version: "1.1.0",
+            date: "2025-09-14",
+            changes: [
+                "🔄 Added automatic data refresh every 5 minutes",
+                "⚡ Implemented smart retry logic for data latency handling",
+                "🎨 Replaced manual refresh button with auto-refresh indicator",
+                "✨ Enhanced user experience with continuous data updates",
+                "🎯 Fixed slider positioning when viewing historical data",
+                "🧠 Added smart slider positioning to maintain timestamp context",
+                "🔧 Improved data synchronization between slider and map display"
+            ]
+        },
+        {
             version: "1.0.0",
             date: "2025-04-21",
             changes: [

@@ -8,8 +8,13 @@ window.addEventListener('load', init);
 // Initialize map
 let map = null;
 let issMarker = null;
-let isRefreshCooldown = false;
-const COOLDOWN_DURATION = 15; // seconds
+
+// Auto-refresh configuration
+const AUTO_REFRESH_INTERVAL = 5 * 60 * 1000; // 5 minutes in milliseconds
+const RETRY_INTERVAL = 7 * 1000; // 7 seconds for retry attempts
+let autoRefreshTimer = null;
+let retryTimer = null;
+let lastDataTimestamp = null;
 
 // Initialize location history manager
 const locationHistory = new LocationHistoryManager();
@@ -26,9 +31,8 @@ async function init() {
     
     await fetchISSData();
     
-    // Add refresh button handler
-    const refreshButton = document.getElementById('refresh');
-    refreshButton.addEventListener('click', fetchISSData);
+    // Start automatic refresh
+    startAutoRefresh();
 }
 
 function initMap() {
@@ -125,45 +129,132 @@ function formatTimestamp(timestamp) {
     return `${localTimeStr}\n\n${utcStr}`;
 }
 
-// Start cooldown timer
-function startCooldown() {
-    const refreshButton = document.getElementById('refresh');
-    const countdownBar = document.getElementById('countdown-bar');
-    const countdownText = document.getElementById('countdown-text');
-    let timeLeft = COOLDOWN_DURATION;
-    let startTime = Date.now();
-    isRefreshCooldown = true;
-    refreshButton.disabled = true;
+// Start automatic refresh timer
+function startAutoRefresh() {
+    // Clear any existing timers
+    if (autoRefreshTimer) {
+        clearTimeout(autoRefreshTimer);
+    }
+    if (retryTimer) {
+        clearTimeout(retryTimer);
+    }
     
-    // Show countdown elements
-    countdownText.style.display = 'block';
+    // Calculate time until next 5-minute mark (e.g., 2:20, 2:25, etc.)
+    const now = new Date();
+    const nextUpdate = getNextScheduledUpdate(now);
+    const timeUntilUpdate = nextUpdate.getTime() - now.getTime();
     
-    // Start countdown animation
-    countdownBar.style.transform = 'scaleX(1)';
-    countdownBar.style.transition = `transform ${COOLDOWN_DURATION}s linear`;
-    countdownBar.style.transform = 'scaleX(0)';
+    // Set up the main auto-refresh timer
+    autoRefreshTimer = setTimeout(() => {
+        fetchISSDataWithRetry();
+    }, timeUntilUpdate);
     
-    // Update countdown text every 100ms for smooth decimal display
-    const textTimer = setInterval(() => {
-        const elapsed = (Date.now() - startTime) / 1000;
-        const remaining = Math.max(COOLDOWN_DURATION - elapsed, 0);
-        countdownText.textContent = `${remaining.toFixed(1)}s`;
-    }, 100);
+    console.log('Auto-refresh started - next update at:', nextUpdate.toLocaleTimeString());
+}
+
+// Calculate the next scheduled 5-minute update time
+function getNextScheduledUpdate(currentTime) {
+    const nextUpdate = new Date(currentTime);
     
-    // Main countdown timer
-    const timer = setInterval(() => {
-        timeLeft--;
-        if (timeLeft <= 0) {
-            clearInterval(timer);
-            clearInterval(textTimer);
-            isRefreshCooldown = false;
-            refreshButton.disabled = false;
-            countdownBar.style.transition = 'none';
-            countdownBar.style.transform = 'scaleX(1)';
-            // Hide countdown text instead of showing 0.0s
-            countdownText.style.display = 'none';
+    // Get current minutes
+    const currentMinutes = nextUpdate.getMinutes();
+    
+    // Calculate next 5-minute mark
+    const nextMinuteMark = Math.ceil(currentMinutes / 5) * 5;
+    
+    if (nextMinuteMark >= 60) {
+        // If we're past 55 minutes, go to next hour
+        nextUpdate.setHours(nextUpdate.getHours() + 1);
+        nextUpdate.setMinutes(0);
+    } else {
+        nextUpdate.setMinutes(nextMinuteMark);
+    }
+    
+    // Reset seconds to 0
+    nextUpdate.setSeconds(0);
+    nextUpdate.setMilliseconds(0);
+    
+    return nextUpdate;
+}
+
+// Fetch ISS data with retry logic for new data
+async function fetchISSDataWithRetry() {
+    try {
+        const response = await fetch(`${config.API_URL}?api_key=${config.API_KEY}`);
+        
+        if (!response.ok) {
+            throw new Error(`API returned ${response.status}`);
         }
-    }, 1000);
+        
+        const data = await response.json();
+        
+        // Check if we have new data
+        if (lastDataTimestamp && data.timestamp === lastDataTimestamp) {
+            console.log('No new data available, retrying in 7 seconds...');
+            
+            // Schedule retry
+            retryTimer = setTimeout(() => {
+                fetchISSDataWithRetry();
+            }, RETRY_INTERVAL);
+            
+            return;
+        }
+        
+        // We have new data, update the UI
+        lastDataTimestamp = data.timestamp;
+        const addResult = updateUI(data);
+        
+        // Update slider range and handle smart positioning
+        historySlider.updateSliderRange();
+        
+        // Smart slider positioning based on previous position
+        console.log('Smart positioning - addResult:', addResult);
+        if (addResult && addResult.currentTimestamp) {
+            console.log('Was at oldest position:', addResult.wasAtOldestPosition);
+            console.log('Current timestamp was:', addResult.currentTimestamp);
+            
+            if (addResult.wasAtOldestPosition) {
+                // Was at oldest position, move to new oldest position (position 0)
+                const slider = document.getElementById('history-slider');
+                historySlider.setSliderValue(0, true);
+                console.log('Was at oldest position, moved to new oldest position (0)');
+            } else {
+                // Was at a specific timestamp, try to maintain that timestamp
+                const found = historySlider.setSliderToTimestamp(addResult.currentTimestamp);
+                if (!found) {
+                    // Timestamp no longer exists, move to most recent
+                    const slider = document.getElementById('history-slider');
+                    historySlider.setSliderValue(slider.max, true);
+                    console.log('Previous timestamp not found, moved to most recent');
+                } else {
+                    console.log('Maintained position at timestamp:', addResult.currentTimestamp);
+                }
+            }
+        } else {
+            // Default behavior - move to most recent
+            const slider = document.getElementById('history-slider');
+            historySlider.setSliderValue(slider.max, true);
+            console.log('No addResult, moved to most recent');
+        }
+        
+        // Hide any previous error messages
+        document.getElementById('error').style.display = 'none';
+        
+        // Schedule next auto-refresh
+        startAutoRefresh();
+        
+    } catch (error) {
+        console.error('Error in auto-refresh:', error);
+        
+        // Show error but still schedule next attempt
+        showError(
+            'Failed to fetch ISS data. Will retry automatically.',
+            `Error: ${error.message}`
+        );
+        
+        // Schedule next auto-refresh even on error
+        startAutoRefresh();
+    }
 }
 
 // Check if data is stale (more than 5 minutes old)
@@ -311,14 +402,14 @@ function updateUI(data) {
     const fact = document.getElementById('fact');
     
     if (data.latitude && data.longitude) {
-        // Add the new location to history
-        locationHistory.addLocation({
+        // Add the new location to history with smart slider positioning
+        const addResult = locationHistory.addLocation({
             timestamp: data.timestamp,
             latitude: data.latitude,
             longitude: data.longitude,
             location: data.location,
             fun_fact: data.fun_fact
-        });
+        }, () => historySlider.getCurrentSliderInfo());
 
         // Update text displays
         coordinates.textContent = `${formatCoordinates(parseFloat(data.latitude), parseFloat(data.longitude))}${data.location ? `\n\n${data.location}` : ''}`;
@@ -386,9 +477,13 @@ function updateUI(data) {
             });
             closestMarker.openPopup();
         }
+        
+        // Return the addResult for smart slider positioning
+        return addResult;
     } else {
         console.error('Unexpected data structure:', data);
         showError('Received invalid data structure from API');
+        return null;
     }
 }
 
@@ -407,15 +502,10 @@ function showError(message, details = '') {
     errorDiv.style.display = 'block';
 }
 
-// Fetch ISS data
+// Fetch ISS data (initial load)
 async function fetchISSData() {
-    if (isRefreshCooldown) return;
-    
-    const refreshButton = document.getElementById('refresh');
-    refreshButton.disabled = true;
-    
     try {
-        console.log('Fetching data from:', config.API_URL);
+        console.log('Fetching initial data from:', config.API_URL);
         const response = await fetch(`${config.API_URL}?api_key=${config.API_KEY}`);
         console.log('Response status:', response.status);
         
@@ -426,28 +516,28 @@ async function fetchISSData() {
         }
         
         const data = await response.json();
-        console.log('Received data:', data);
-        updateUI(data);
+        console.log('Received initial data:', data);
         
-        // Reset slider to current position (now on the right)
+        // Store the timestamp for comparison
+        lastDataTimestamp = data.timestamp;
+        
+        const addResult = updateUI(data);
+        
+        // Update slider range and reset to most recent position
+        historySlider.updateSliderRange();
         const slider = document.getElementById('history-slider');
         console.log('Resetting slider - Current max:', slider.max);
-        historySlider.setSliderValue(slider.max);
+        historySlider.setSliderValue(slider.max, true); // Skip map update since map already shows current data
         
         // Hide any previous error messages
         document.getElementById('error').style.display = 'none';
         
-        // Start cooldown after successful fetch
-        if (!isRefreshCooldown) {
-            startCooldown();
-        }
     } catch (error) {
         console.error('Error details:', error);
         showError(
-            'Failed to fetch ISS data. Please try again later.',
+            'Failed to fetch initial ISS data. Auto-refresh will continue.',
             `Error: ${error.message}`
         );
-        refreshButton.disabled = false;
     }
 }
 

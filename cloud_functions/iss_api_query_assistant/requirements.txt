@@ -1,6 +1,6 @@
 Flask==2.3.3
 Werkzeug>=3.0.6
-functions-framework==3.5.1
+functions-framework==3.5.0
 google-cloud-secret-manager==2.16.4
-requests==2.31.0
+requests>=2.32.4
 google-cloud-logging==3.9.0

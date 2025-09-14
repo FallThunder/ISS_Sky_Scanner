@@ -43,6 +43,7 @@ echo -e "\n${YELLOW}Test 1: No API key${NC}"
 echo "📡 Making request..."
 RESPONSE=$(curl -s -X POST "${FUNCTION_URL}" \
     -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
     -d '{
         "rating": 5,
         "feedback": "Test feedback message",
@@ -60,6 +61,7 @@ echo -e "\n${YELLOW}Test 2: Invalid API key${NC}"
 echo "📡 Making request..."
 RESPONSE=$(curl -s -X POST "${FUNCTION_URL}?api_key=invalid_key" \
     -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
     -d '{
         "rating": 5,
         "feedback": "Test feedback message",
@@ -77,6 +79,7 @@ echo -e "\n${YELLOW}Test 3: Valid feedback submission${NC}"
 echo "📡 Making request..."
 RESPONSE=$(curl -s -X POST "${FUNCTION_URL}?api_key=${API_KEY}" \
     -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
     -d '{
         "rating": 5,
         "feedback": "Test feedback message",
@@ -94,6 +97,7 @@ echo -e "\n${YELLOW}Test 4: Invalid rating${NC}"
 echo "📡 Making request..."
 RESPONSE=$(curl -s -X POST "${FUNCTION_URL}?api_key=${API_KEY}" \
     -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
     -d '{
         "rating": 6,
         "feedback": "Test feedback",
@@ -111,6 +115,7 @@ echo -e "\n${YELLOW}Test 5: Too long feedback${NC}"
 echo "📡 Making request..."
 RESPONSE=$(curl -s -X POST "${FUNCTION_URL}?api_key=${API_KEY}" \
     -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
     -d "{
         \"rating\": 4,
         \"feedback\": \"$(python3 -c 'print("test " * 101)')\",
@@ -128,6 +133,7 @@ echo -e "\n${YELLOW}Test 6: Missing required field${NC}"
 echo "📡 Making request..."
 RESPONSE=$(curl -s -X POST "${FUNCTION_URL}?api_key=${API_KEY}" \
     -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
     -d '{
         "rating": 5,
         "userAgent": "Test Script"
@@ -146,8 +152,9 @@ RESPONSE=$(curl -s -X OPTIONS "${FUNCTION_URL}" \
     -H "Origin: http://localhost:8080" \
     -H "Access-Control-Request-Method: POST" \
     -H "Access-Control-Request-Headers: Content-Type" \
+    -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
     -v 2>&1)
-if [[ $RESPONSE == *"Access-Control-Allow-Origin: *"* ]]; then
+if [[ $RESPONSE == *"access-control-allow-origin: *"* ]]; then
     echo -e "${GREEN}✅ Test 7 passed: CORS headers are correctly set${NC}"
 else
     echo -e "${RED}❌ Test 7 failed: CORS headers are missing${NC}"

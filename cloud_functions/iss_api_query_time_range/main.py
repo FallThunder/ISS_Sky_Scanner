@@ -3,7 +3,6 @@ from flask import jsonify, request
 import logging
 from datetime import datetime, timedelta
 from utils import query_time_range
-from flask_cors import CORS
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)

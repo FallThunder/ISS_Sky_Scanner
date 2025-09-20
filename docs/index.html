@@ -49,10 +49,20 @@
                 <div id="map"></div>
             </div>
             <div class="card" id="history-controls">
-                <h2>Location History</h2>
+                <h2>Location History & Predictions</h2>
                 <div class="slider-container">
+                    <div class="slider-range-markers">
+                        <span class="range-marker left clickable" id="nav-24h-ago">-24h</span>
+                        <span class="range-marker center clickable" id="nav-now">Now</span>
+                        <span class="range-marker right clickable" id="nav-24h-future">+24h</span>
+                    </div>
                     <input type="range" id="history-slider" min="0" value="0" class="slider">
                     <div id="time-display" class="time-display">No history available</div>
+                </div>
+                <div id="predictions-loading" class="predictions-loading">
+                    <div class="loading-spinner" id="loading-spinner"></div>
+                    <div class="loading-checkmark" id="loading-checkmark" style="display: none;"></div>
+                    <p id="loading-text">Generating predictions...</p>
                 </div>
             </div>
             <div class="card" id="error" style="display: none;">
@@ -100,6 +110,7 @@
             
     <!-- Our JavaScript -->
     <script type="module" src="./js/config.js"></script>
+    <script type="module" src="./js/issPrediction.js"></script>
     <script type="module" src="./js/main.js"></script>
     <script type="module" src="./js/chat.js"></script>
     <script type="module" src="./js/message.js"></script>

@@ -10,11 +10,12 @@ class HistorySlider {
         const slider = document.getElementById('history-slider');
         const timeDisplay = document.getElementById('time-display');
 
-        // Set max value based on available history
+        // Set max value based on available history and predictions
         this.updateSliderRange();
-
-        // Set initial value to max (newest/current time)
-        this.setSliderValue(slider.max);
+        
+        // Don't set initial value here - wait for predictions to be generated
+        // The slider will be positioned in updateUI() after predictions are available
+        // Loading animation will be shown until then
 
         // Prevent scrolling when interacting with the slider
         slider.addEventListener('wheel', (e) => {
@@ -32,6 +33,37 @@ class HistorySlider {
 
         // Initial display
         this.updateDisplay();
+        
+        // Add click handlers for navigation buttons
+        this.initializeNavigationButtons();
+    }
+
+    initializeNavigationButtons() {
+        // -24h button
+        const nav24hAgo = document.getElementById('nav-24h-ago');
+        if (nav24hAgo) {
+            nav24hAgo.addEventListener('click', () => {
+                this.setSliderValue(0); // Oldest position
+            });
+        }
+
+        // Now button
+        const navNow = document.getElementById('nav-now');
+        if (navNow) {
+            navNow.addEventListener('click', () => {
+                const historyCount = this.locationHistory.getLocations().length;
+                this.setSliderValue(historyCount - 1); // Current time position
+            });
+        }
+
+        // +24h button
+        const nav24hFuture = document.getElementById('nav-24h-future');
+        if (nav24hFuture) {
+            nav24hFuture.addEventListener('click', () => {
+                const allLocations = this.locationHistory.getAllLocations();
+                this.setSliderValue(allLocations.length - 1); // Latest prediction
+            });
+        }
     }
 
     setSliderValue(value, skipMapUpdate = false) {
@@ -56,6 +88,8 @@ class HistorySlider {
                 const date = new Date(location.timestamp);
                 timeDisplay.textContent = date.toLocaleString();
             }
+            // Still update the "Now" indicator
+            this.updateNowIndicator();
         }
         
         this.isUpdating = false;
@@ -63,25 +97,43 @@ class HistorySlider {
 
     updateSliderRange() {
         const slider = document.getElementById('history-slider');
-        const locations = this.locationHistory.getLocations();
+        const allLocations = this.locationHistory.getAllLocations();
+        const historyCount = this.locationHistory.getLocations().length;
         const oldMax = slider.max;
-        slider.max = locations.length - 1;
+        slider.max = allLocations.length - 1;
         
-        console.log('Updated slider range - Old max:', oldMax, 'New max:', slider.max, 'Locations count:', locations.length);
+        console.log('Updated slider range - Old max:', oldMax, 'New max:', slider.max, 'Total locations count:', allLocations.length, 'History count:', historyCount);
+        console.log('Slider range: 0 to', slider.max, '(Current time at position', historyCount - 1, ')');
         
         // Only set the value if it's not already set or is invalid
         if (!slider.value || slider.value > slider.max) {
-            slider.value = slider.max;
-            this.currentIndex = 0;
+            // Only set a value if we have predictions (full 48-hour range)
+            // If no predictions yet, leave slider unpositioned until predictions are generated
+            if (this.locationHistory.getPredictions().length > 0) {
+                // Set to current time position (middle of full range)
+                slider.value = historyCount - 1;
+                this.currentIndex = this.getInvertedIndex(parseInt(slider.value));
+            } else {
+                // No predictions yet, don't set a value
+                this.currentIndex = 0;
+            }
         } else {
             this.currentIndex = this.getInvertedIndex(parseInt(slider.value));
         }
     }
 
-    // Convert slider value to actual index (inverted)
+    // Convert slider value to actual index
+    // Slider: 0 (oldest history) -> max (latest prediction)
+    // Array: 0 (oldest history) -> max (latest prediction)
+    // No inversion needed now!
     getInvertedIndex(sliderValue) {
-        const locations = this.locationHistory.getLocations();
-        return locations.length - 1 - sliderValue;
+        return parseInt(sliderValue);
+    }
+
+    // Check if the slider has been positioned yet
+    isPositioned() {
+        const slider = document.getElementById('history-slider');
+        return slider.value !== '' && slider.value !== null && slider.value !== undefined;
     }
 
     updateDisplay() {
@@ -89,10 +141,38 @@ class HistorySlider {
         if (location) {
             const timeDisplay = document.getElementById('time-display');
             const date = new Date(location.timestamp);
-            timeDisplay.textContent = date.toLocaleString();
+            
+            // Add prediction indicator if this is a predicted location
+            let displayText = date.toLocaleString();
+            if (location.isPredicted) {
+                displayText += ' (Predicted)';
+                if (location.confidence) {
+                    displayText += ` - ${Math.round(location.confidence * 100)}% confidence`;
+                }
+            }
+            
+            timeDisplay.textContent = displayText;
+            
+            // Update "Now" indicator
+            this.updateNowIndicator();
             
             // Update map and info through callback
             this.updateMapCallback(location);
+        }
+    }
+
+    updateNowIndicator() {
+        const slider = document.getElementById('history-slider');
+        const historyCount = this.locationHistory.getLocations().length;
+        const nowMarker = document.querySelector('.range-marker.center');
+        
+        if (nowMarker) {
+            const isAtCurrentTime = parseInt(slider.value) === historyCount - 1;
+            if (isAtCurrentTime) {
+                nowMarker.classList.add('highlighted');
+            } else {
+                nowMarker.classList.remove('highlighted');
+            }
         }
     }
 
@@ -116,13 +196,13 @@ class HistorySlider {
 
     // Find and set slider to a specific timestamp
     setSliderToTimestamp(targetTimestamp) {
-        const locations = this.locationHistory.getLocations();
-        const targetIndex = locations.findIndex(loc => 
+        const allLocations = this.locationHistory.getAllLocations();
+        const targetIndex = allLocations.findIndex(loc => 
             new Date(loc.timestamp).getTime() === new Date(targetTimestamp).getTime()
         );
         
         if (targetIndex !== -1) {
-            const sliderValue = locations.length - 1 - targetIndex;
+            const sliderValue = allLocations.length - 1 - targetIndex;
             this.setSliderValue(sliderValue);
             console.log('Set slider to timestamp:', targetTimestamp, 'at index:', targetIndex, 'slider value:', sliderValue);
             return true;

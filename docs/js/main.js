@@ -1,9 +1,42 @@
 import config from './config.js';
 import LocationHistoryManager from './locationHistory.js';
 import HistorySlider from './historySlider.js';
+import ISSPredictor from './issPrediction.js';
 
 // Initialize the application when the page loads
 window.addEventListener('load', init);
+
+// Loading state management
+function showPredictionsLoading() {
+    const loadingElement = document.getElementById('predictions-loading');
+    if (loadingElement) {
+        loadingElement.classList.remove('hidden');
+    }
+}
+
+function hidePredictionsLoading() {
+    const loadingElement = document.getElementById('predictions-loading');
+    const spinner = document.getElementById('loading-spinner');
+    const checkmark = document.getElementById('loading-checkmark');
+    const loadingText = document.getElementById('loading-text');
+    
+    if (loadingElement && spinner && checkmark && loadingText) {
+        // Hide spinner and show checkmark
+        spinner.style.display = 'none';
+        checkmark.style.display = 'flex';
+        loadingText.textContent = 'Predictions ready!';
+        
+        // Start fade out after checkmark animation completes
+        setTimeout(() => {
+            loadingElement.classList.add('fade-out');
+            
+            // Hide completely after fade animation
+            setTimeout(() => {
+                loadingElement.classList.add('hidden');
+            }, 800); // Match CSS transition duration
+        }, 900); // Wait for checkmark animation to complete
+    }
+}
 
 // Initialize map
 let map = null;
@@ -16,14 +49,21 @@ let autoRefreshTimer = null;
 let retryTimer = null;
 let lastDataTimestamp = null;
 
-// Initialize location history manager
+// Initialize location history manager and predictor
 const locationHistory = new LocationHistoryManager();
+const issPredictor = new ISSPredictor();
 let historySlider = null;
 
 // Initialize the application
 async function init() {
     initMap();
     await locationHistory.initializeHistory();
+    
+    // Set the predictor in location history manager
+    locationHistory.setPredictor(issPredictor);
+    
+    // Show loading animation while setting up predictions
+    showPredictionsLoading();
     
     // Initialize history slider with callback to update map
     historySlider = new HistorySlider(locationHistory, updateMapFromHistory);
@@ -214,27 +254,26 @@ async function fetchISSDataWithRetry() {
             console.log('Current timestamp was:', addResult.currentTimestamp);
             
             if (addResult.wasAtOldestPosition) {
-                // Was at oldest position, move to new oldest position (position 0)
-                const slider = document.getElementById('history-slider');
+                // Was at oldest position, stay at oldest position (which is now position 0)
                 historySlider.setSliderValue(0, true);
-                console.log('Was at oldest position, moved to new oldest position (0)');
+                console.log('Was at oldest position, staying at oldest position (0)');
             } else {
                 // Was at a specific timestamp, try to maintain that timestamp
                 const found = historySlider.setSliderToTimestamp(addResult.currentTimestamp);
                 if (!found) {
-                    // Timestamp no longer exists, move to most recent
-                    const slider = document.getElementById('history-slider');
-                    historySlider.setSliderValue(slider.max, true);
-                    console.log('Previous timestamp not found, moved to most recent');
+                    // Timestamp no longer exists (probably cleaned up), move to current time
+                    const historyCount = locationHistory.getLocations().length;
+                    historySlider.setSliderValue(historyCount - 1, true);
+                    console.log('Previous timestamp not found (likely cleaned up), moved to current time');
                 } else {
                     console.log('Maintained position at timestamp:', addResult.currentTimestamp);
                 }
             }
         } else {
-            // Default behavior - move to most recent
-            const slider = document.getElementById('history-slider');
-            historySlider.setSliderValue(slider.max, true);
-            console.log('No addResult, moved to most recent');
+            // Default behavior - move to current time
+            const historyCount = locationHistory.getLocations().length;
+            historySlider.setSliderValue(historyCount - 1, true);
+            console.log('No addResult, moved to current time');
         }
         
         // Hide any previous error messages
@@ -333,18 +372,37 @@ function updateMapFromHistory(location) {
     // Remove existing markers if they exist
     if (issMarker) {
         if (Array.isArray(issMarker)) {
-            issMarker.forEach(marker => map.removeLayer(marker));
+            issMarker.forEach(marker => {
+                map.removeLayer(marker);
+                // Remove uncertainty circles if they exist
+                if (marker.uncertaintyCircles) {
+                    marker.uncertaintyCircles.forEach(circle => map.removeLayer(circle));
+                }
+            });
         } else {
             map.removeLayer(issMarker);
+            // Remove uncertainty circles if they exist
+            if (issMarker.uncertaintyCircles) {
+                issMarker.uncertaintyCircles.forEach(circle => map.removeLayer(circle));
+            }
         }
     }
 
-    // Create icon
+    // Create icon based on location type
     const issIcon = L.icon({
         iconUrl: './assets/iss-icon.svg',
         iconSize: [32, 32],
         iconAnchor: [16, 16],
         popupAnchor: [0, -16]
+    });
+
+    // Create prediction icon (same size as regular icon)
+    const predictionIcon = L.icon({
+        iconUrl: './assets/iss-icon.svg',
+        iconSize: [32, 32],
+        iconAnchor: [16, 16],
+        popupAnchor: [0, -16],
+        className: 'prediction-marker'
     });
 
     // Get map bounds
@@ -360,20 +418,73 @@ function updateMapFromHistory(location) {
     // Create array to hold markers
     issMarker = [];
 
-    // Check if this is the most recent location
+    // Check if this is the most recent location or a prediction
     const slider = document.getElementById('history-slider');
-    const isCurrentLocation = parseInt(slider.value) === parseInt(slider.max);
-    console.log('Slider value:', slider.value, 'Max:', slider.max, 'Is current:', isCurrentLocation);
-    const popupPrefix = isCurrentLocation ? 'ISS Location' : 'Historical Location';
+    const historyCount = locationHistory.getLocations().length;
+    const isCurrentLocation = parseInt(slider.value) === historyCount - 1;
+    const isPrediction = location.isPredicted;
+    console.log('Slider value:', slider.value, 'History count:', historyCount, 'Is current:', isCurrentLocation, 'Is prediction:', isPrediction);
+    
+    let popupPrefix = 'Historical Location';
+    if (isCurrentLocation && !isPrediction) {
+        popupPrefix = 'ISS Location';
+    } else if (isPrediction) {
+        popupPrefix = 'Predicted Location';
+    }
 
     // Add markers for all visible longitudes with extra buffer
     for (let currLon = baseLon; currLon <= east + 720; currLon += 360) {  // Add two world widths to the east
-        const marker = L.marker([lat, currLon], { icon: issIcon }).addTo(map);
+        const iconToUse = isPrediction ? predictionIcon : issIcon;
+        const marker = L.marker([lat, currLon], { icon: iconToUse }).addTo(map);
+        
+        // Add uncertainty rings for predictions
+        if (isPrediction && location.confidence) {
+            // Calculate uncertainty radius based on confidence (lower confidence = larger radius)
+            const confidence = location.confidence;
+            const maxRadius = 500000; // 500km in meters
+            const minRadius = 50000;  // 50km in meters
+            const uncertaintyRadius = maxRadius - (confidence * (maxRadius - minRadius));
+            
+            // Create three concentric circles with different opacities
+            const innerCircle = L.circle([lat, currLon], {
+                radius: uncertaintyRadius * 0.3,
+                color: '#FF6400',
+                weight: 3,
+                opacity: 0.8,
+                fillOpacity: 0
+            }).addTo(map);
+            
+            const middleCircle = L.circle([lat, currLon], {
+                radius: uncertaintyRadius * 0.6,
+                color: '#FF6400',
+                weight: 2,
+                opacity: 0.6,
+                fillOpacity: 0
+            }).addTo(map);
+            
+            const outerCircle = L.circle([lat, currLon], {
+                radius: uncertaintyRadius,
+                color: '#FF6400',
+                weight: 1,
+                opacity: 0.4,
+                fillOpacity: 0
+            }).addTo(map);
+            
+            // Store circles with the marker for cleanup
+            marker.uncertaintyCircles = [innerCircle, middleCircle, outerCircle];
+        }
+        
+        let popupContent = `<b>${popupPrefix}:</b><br>`;
         if (location.location) {
             const flag = getCountryFlag(location.location, location.country_code);
             const flagText = flag ? ` ${flag}` : '';
-            marker.bindPopup(`<b>${popupPrefix}:</b><br>${location.location}${flagText}`);
+            popupContent += `${location.location}${flagText}`;
         }
+        if (isPrediction && location.confidence) {
+            popupContent += `<br><small>Confidence: ${Math.round(location.confidence * 100)}%</small>`;
+        }
+        
+        marker.bindPopup(popupContent);
         issMarker.push(marker);
     }
 
@@ -385,7 +496,8 @@ function updateMapFromHistory(location) {
     map.panTo([lat, targetLng]);
     
     // Open popup on the marker closest to center
-    if (location.location && issMarker.length > 0) {
+    // Open popup for any location (historical, current, or prediction)
+    if (issMarker.length > 0) {
         const closestMarker = issMarker.reduce((prev, curr) => {
             const prevDist = Math.abs(prev.getLatLng().lng - center.lng);
             const currDist = Math.abs(curr.getLatLng().lng - center.lng);
@@ -411,6 +523,25 @@ function updateUI(data) {
             fun_fact: data.fun_fact
         }, () => historySlider.getCurrentSliderInfo());
 
+        // Generate predictions based on current location
+        locationHistory.generatePredictions({
+            timestamp: data.timestamp,
+            latitude: data.latitude,
+            longitude: data.longitude
+        });
+
+        // Update slider range after predictions are generated
+        historySlider.updateSliderRange();
+        
+        // Set slider to current time position (middle of slider) if not already positioned
+        const historyCount = locationHistory.getLocations().length;
+        if (!historySlider.isPositioned()) {
+            historySlider.setSliderValue(historyCount - 1, true);
+        }
+        
+        // Hide loading animation now that predictions are ready
+        hidePredictionsLoading();
+
         // Update text displays
         coordinates.textContent = `${formatCoordinates(parseFloat(data.latitude), parseFloat(data.longitude))}${data.location ? `\n\n${data.location}` : ''}`;
         time.textContent = formatTimestamp(data.timestamp);
@@ -431,9 +562,19 @@ function updateUI(data) {
         // Remove existing markers if they exist
         if (issMarker) {
             if (Array.isArray(issMarker)) {
-                issMarker.forEach(marker => map.removeLayer(marker));
+                issMarker.forEach(marker => {
+                    map.removeLayer(marker);
+                    // Remove uncertainty circles if they exist
+                    if (marker.uncertaintyCircles) {
+                        marker.uncertaintyCircles.forEach(circle => map.removeLayer(circle));
+                    }
+                });
             } else {
                 map.removeLayer(issMarker);
+                // Remove uncertainty circles if they exist
+                if (issMarker.uncertaintyCircles) {
+                    issMarker.uncertaintyCircles.forEach(circle => map.removeLayer(circle));
+                }
             }
         }
 
@@ -523,11 +664,11 @@ async function fetchISSData() {
         
         const addResult = updateUI(data);
         
-        // Update slider range and reset to most recent position
+        // Update slider range and reset to current time position (middle of slider)
         historySlider.updateSliderRange();
-        const slider = document.getElementById('history-slider');
-        console.log('Resetting slider - Current max:', slider.max);
-        historySlider.setSliderValue(slider.max, true); // Skip map update since map already shows current data
+        const historyCount = locationHistory.getLocations().length;
+        console.log('Resetting slider - History count:', historyCount, 'Current time position:', historyCount - 1);
+        historySlider.setSliderValue(historyCount - 1, true); // Skip map update since map already shows current data
         
         // Hide any previous error messages
         document.getElementById('error').style.display = 'none';

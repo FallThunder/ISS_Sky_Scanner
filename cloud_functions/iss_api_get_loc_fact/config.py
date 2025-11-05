@@ -1,7 +1,9 @@
 """Configuration settings for the ISS Location Fact API."""
 
 GEMINI_SETTINGS = {
-    'model': 'gemini-1.5-flash',
+    'model': 'gemini-2.5-flash-lite',
+    'project_id': 'iss-sky-scanner-20241222',
+    'location': 'us-east1',
     'temperature': 0.7,
     'max_output_tokens': 150,
 }

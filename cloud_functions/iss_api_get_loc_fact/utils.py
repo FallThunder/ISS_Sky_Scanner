@@ -1,6 +1,7 @@
 from google.cloud import secretmanager
 from google.cloud import storage
-import google.generativeai as genai
+from vertexai.generative_models import GenerativeModel
+from vertexai import init
 import traceback
 import logging
 from config import GEMINI_SETTINGS, DEFAULT_LOCATION_FACT_PROMPT
@@ -35,20 +36,35 @@ def get_location_fact_prompt():
         return DEFAULT_LOCATION_FACT_PROMPT
 
 def generate_location_fun_fact(location):
+    """Generate a fun fact about a location using Vertex AI Gemini 2.5 Flash.
+    
+    Args:
+        location: The location name to generate a fact about.
+        
+    Returns:
+        Tuple of (fact_text, error_info). error_info is None on success.
+    """
     debug_info = []
     
     try:
-        api_key = getSecret('iss-sky-scanner-genai-api-key')
-        if not api_key:
-            raise ValueError("Failed to retrieve API key")
-            
-        debug_info.append("API key retrieved successfully")
-        debug_info.append(f"Attempting Gemini call for location: {location}")
-        genai.configure(api_key=api_key)
+        debug_info.append("Initializing Vertex AI")
+        # Initialize Vertex AI - uses service account credentials automatically
+        # in Cloud Functions environment
+        init(
+            project=GEMINI_SETTINGS['project_id'],
+            location=GEMINI_SETTINGS['location']
+        )
         
-        model = genai.GenerativeModel(GEMINI_SETTINGS['model'])
+        debug_info.append(f"Using model: {GEMINI_SETTINGS['model']}")
+        debug_info.append(f"Attempting Gemini call for location: {location}")
+        
+        # Create model instance
+        model = GenerativeModel(GEMINI_SETTINGS['model'])
+        
+        # Get and format prompt
         prompt = get_location_fact_prompt().format(location=location)
         
+        # Generate content
         response = model.generate_content(
             prompt,
             generation_config={
@@ -56,7 +72,10 @@ def generate_location_fun_fact(location):
                 'max_output_tokens': GEMINI_SETTINGS['max_output_tokens'],
             }
         )
-        return response.text.strip(), None
+        
+        fact_text = response.text.strip()
+        debug_info.append("Successfully generated fact")
+        return fact_text, None
         
     except Exception as err:
         error_info = {

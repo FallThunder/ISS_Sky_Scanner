@@ -45,9 +45,12 @@ let issMarker = null;
 // Auto-refresh configuration
 const AUTO_REFRESH_INTERVAL = 5 * 60 * 1000; // 5 minutes in milliseconds
 const RETRY_INTERVAL = 7 * 1000; // 7 seconds for retry attempts
+const MAX_RETRY_ATTEMPTS = 5; // Maximum number of retry attempts
+const RETRY_STOP_THRESHOLD = 60 * 1000; // Stop retrying if within 60 seconds of next scheduled update
 let autoRefreshTimer = null;
 let retryTimer = null;
 let lastDataTimestamp = null;
+let retryCount = 0; // Track current retry count
 
 // Initialize location history manager and predictor
 const locationHistory = new LocationHistoryManager();
@@ -179,6 +182,9 @@ function startAutoRefresh() {
         clearTimeout(retryTimer);
     }
     
+    // Reset retry count when starting a new refresh cycle
+    retryCount = 0;
+    
     // Calculate time until next 5-minute mark (e.g., 2:20, 2:25, etc.)
     const now = new Date();
     const nextUpdate = getNextScheduledUpdate(now);
@@ -217,6 +223,13 @@ function getNextScheduledUpdate(currentTime) {
     return nextUpdate;
 }
 
+// Get time until next scheduled update in milliseconds
+function getTimeUntilNextUpdate() {
+    const now = new Date();
+    const nextUpdate = getNextScheduledUpdate(now);
+    return nextUpdate.getTime() - now.getTime();
+}
+
 // Fetch ISS data with retry logic for new data
 async function fetchISSDataWithRetry() {
     try {
@@ -230,9 +243,26 @@ async function fetchISSDataWithRetry() {
         
         // Check if we have new data
         if (lastDataTimestamp && data.timestamp === lastDataTimestamp) {
-            console.log('No new data available, retrying in 7 seconds...');
+            // Check if we should stop retrying
+            const timeUntilNextUpdate = getTimeUntilNextUpdate();
+            const shouldStopRetrying = 
+                retryCount >= MAX_RETRY_ATTEMPTS || 
+                timeUntilNextUpdate <= RETRY_STOP_THRESHOLD;
             
-            // Schedule retry
+            if (shouldStopRetrying) {
+                console.log('Stopping retries - max attempts reached or too close to next scheduled update');
+                console.log(`Retry count: ${retryCount}/${MAX_RETRY_ATTEMPTS}, Time until next update: ${Math.round(timeUntilNextUpdate / 1000)}s`);
+                
+                // Reset retry count and schedule next auto-refresh
+                retryCount = 0;
+                startAutoRefresh();
+                return;
+            }
+            
+            // Increment retry count and schedule retry
+            retryCount++;
+            console.log(`No new data available, retrying in 7 seconds... (attempt ${retryCount}/${MAX_RETRY_ATTEMPTS})`);
+            
             retryTimer = setTimeout(() => {
                 fetchISSDataWithRetry();
             }, RETRY_INTERVAL);
@@ -240,7 +270,12 @@ async function fetchISSDataWithRetry() {
             return;
         }
         
-        // We have new data, update the UI
+        // We have new data, clear any pending retry timer and reset retry count
+        if (retryTimer) {
+            clearTimeout(retryTimer);
+            retryTimer = null;
+        }
+        retryCount = 0;
         lastDataTimestamp = data.timestamp;
         const addResult = updateUI(data);
         

@@ -494,4 +494,3 @@ This project demonstrates a full-stack IoT and web application using modern clou
 ---
 
 **Note**: I am actively seeking volunteer opportunities to contribute my software development skills. Feel free to reach out!
-

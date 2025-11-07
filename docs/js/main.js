@@ -51,6 +51,7 @@ let autoRefreshTimer = null;
 let retryTimer = null;
 let lastDataTimestamp = null;
 let retryCount = 0; // Track current retry count
+let isFetching = false; // Flag to prevent concurrent API calls
 
 // Initialize location history manager and predictor
 const locationHistory = new LocationHistoryManager();
@@ -232,6 +233,14 @@ function getTimeUntilNextUpdate() {
 
 // Fetch ISS data with retry logic for new data
 async function fetchISSDataWithRetry() {
+    // Prevent concurrent API calls
+    if (isFetching) {
+        console.log('API call already in progress, skipping duplicate request');
+        return;
+    }
+    
+    isFetching = true;
+    
     try {
         const response = await fetch(`${config.API_URL}?api_key=${config.API_KEY}`);
         
@@ -255,6 +264,7 @@ async function fetchISSDataWithRetry() {
                 
                 // Reset retry count and schedule next auto-refresh
                 retryCount = 0;
+                isFetching = false;
                 startAutoRefresh();
                 return;
             }
@@ -263,6 +273,7 @@ async function fetchISSDataWithRetry() {
             retryCount++;
             console.log(`No new data available, retrying in 7 seconds... (attempt ${retryCount}/${MAX_RETRY_ATTEMPTS})`);
             
+            isFetching = false; // Allow next retry attempt
             retryTimer = setTimeout(() => {
                 fetchISSDataWithRetry();
             }, RETRY_INTERVAL);
@@ -314,11 +325,17 @@ async function fetchISSDataWithRetry() {
         // Hide any previous error messages
         document.getElementById('error').style.display = 'none';
         
+        // Reset fetching flag before scheduling next auto-refresh
+        isFetching = false;
+        
         // Schedule next auto-refresh
         startAutoRefresh();
         
     } catch (error) {
         console.error('Error in auto-refresh:', error);
+        
+        // Reset fetching flag on error
+        isFetching = false;
         
         // Show error but still schedule next attempt
         showError(

@@ -31,8 +31,8 @@ class HistorySlider {
             this.setSliderValue(parseInt(slider.value));
         });
 
-        // Initial display
-        this.updateDisplay();
+        // Don't call updateDisplay() during initialization - wait for current ISS location to be loaded
+        // The map will be updated after fetchISSData() completes in main.js
         
         // Add click handlers for navigation buttons
         this.initializeNavigationButtons();
@@ -51,8 +51,8 @@ class HistorySlider {
         const navNow = document.getElementById('nav-now');
         if (navNow) {
             navNow.addEventListener('click', () => {
-                const historyCount = this.locationHistory.getLocations().length;
-                this.setSliderValue(historyCount - 1); // Current time position
+                const filledHistoryCount = this.locationHistory.getFilledHistoryCount();
+                this.setSliderValue(filledHistoryCount - 1); // Current time position
             });
         }
 
@@ -64,6 +64,119 @@ class HistorySlider {
                 this.setSliderValue(allLocations.length - 1); // Latest prediction
             });
         }
+
+        // Step navigation buttons (single step = 5 minutes)
+        const navStepBack = document.getElementById('nav-step-back');
+        if (navStepBack) {
+            navStepBack.addEventListener('click', () => {
+                this.navigateBySteps(-1);
+            });
+        }
+
+        const navStepForward = document.getElementById('nav-step-forward');
+        if (navStepForward) {
+            navStepForward.addEventListener('click', () => {
+                this.navigateBySteps(1);
+            });
+        }
+
+        // Time skip buttons
+        const navBack5min = document.getElementById('nav-back-5min');
+        if (navBack5min) {
+            navBack5min.addEventListener('click', () => {
+                this.navigateBySteps(-1); // 5 minutes = 1 step
+            });
+        }
+
+        const navBack15min = document.getElementById('nav-back-15min');
+        if (navBack15min) {
+            navBack15min.addEventListener('click', () => {
+                this.navigateBySteps(-3); // 15 minutes = 3 steps
+            });
+        }
+
+        const navBack1h = document.getElementById('nav-back-1h');
+        if (navBack1h) {
+            navBack1h.addEventListener('click', () => {
+                this.navigateBySteps(-12); // 1 hour = 12 steps
+            });
+        }
+
+        const navForward5min = document.getElementById('nav-forward-5min');
+        if (navForward5min) {
+            navForward5min.addEventListener('click', () => {
+                this.navigateBySteps(1); // 5 minutes = 1 step
+            });
+        }
+
+        const navForward15min = document.getElementById('nav-forward-15min');
+        if (navForward15min) {
+            navForward15min.addEventListener('click', () => {
+                this.navigateBySteps(3); // 15 minutes = 3 steps
+            });
+        }
+
+        const navForward1h = document.getElementById('nav-forward-1h');
+        if (navForward1h) {
+            navForward1h.addEventListener('click', () => {
+                this.navigateBySteps(12); // 1 hour = 12 steps
+            });
+        }
+
+        // Update button states when slider changes
+        const slider = document.getElementById('history-slider');
+        if (slider) {
+            slider.addEventListener('input', () => {
+                this.updateNavigationButtonStates();
+            });
+        }
+    }
+
+    navigateBySteps(steps) {
+        const slider = document.getElementById('history-slider');
+        if (!slider) return;
+
+        const currentValue = parseInt(slider.value);
+        const maxValue = parseInt(slider.max);
+        const newValue = Math.min(Math.max(currentValue + steps, 0), maxValue);
+        
+        this.setSliderValue(newValue);
+    }
+
+    updateNavigationButtonStates() {
+        const slider = document.getElementById('history-slider');
+        if (!slider) return;
+
+        const currentValue = parseInt(slider.value);
+        const maxValue = parseInt(slider.max);
+
+        // Disable back buttons if at the beginning
+        const backButtons = [
+            'nav-step-back',
+            'nav-back-5min',
+            'nav-back-15min',
+            'nav-back-1h'
+        ];
+        backButtons.forEach(id => {
+            const button = document.getElementById(id);
+            if (button) {
+                button.disabled = currentValue <= 0;
+            }
+        });
+
+        // Disable forward buttons if at the end
+        const forwardButtons = [
+            'nav-step-forward',
+            'nav-forward-5min',
+            'nav-forward-15min',
+            'nav-forward-1h'
+        ];
+        forwardButtons.forEach(id => {
+            const button = document.getElementById(id);
+            if (button) {
+                button.disabled = currentValue >= maxValue;
+            }
+        });
     }
 
     setSliderValue(value, skipMapUpdate = false) {
@@ -77,6 +190,9 @@ class HistorySlider {
         console.log('Setting slider value:', value, 'Max:', maxValue, 'Skip map update:', skipMapUpdate);
         slider.value = value;
         this.currentIndex = this.getInvertedIndex(value);
+        
+        // Update navigation button states
+        this.updateNavigationButtonStates();
         
         if (!skipMapUpdate) {
             this.updateDisplay();
@@ -98,28 +214,46 @@ class HistorySlider {
     updateSliderRange() {
         const slider = document.getElementById('history-slider');
         const allLocations = this.locationHistory.getAllLocations();
-        const historyCount = this.locationHistory.getLocations().length;
-        const oldMax = slider.max;
-        slider.max = allLocations.length - 1;
+        // Get filled history count (should be 288 entries for 24 hours)
+        const filledHistoryCount = this.locationHistory.getFilledHistoryCount();
+        const predictionsCount = this.locationHistory.getPredictions().length;
+        const oldMax = parseInt(slider.max) || 0;
+        const newMax = allLocations.length - 1;
         
-        console.log('Updated slider range - Old max:', oldMax, 'New max:', slider.max, 'Total locations count:', allLocations.length, 'History count:', historyCount);
-        console.log('Slider range: 0 to', slider.max, '(Current time at position', historyCount - 1, ')');
+        slider.max = newMax;
+        
+        console.log('Updated slider range - Old max:', oldMax, 'New max:', newMax, 'Total locations count:', allLocations.length, 'Filled history count:', filledHistoryCount, 'Predictions count:', predictionsCount);
+        console.log('Slider range: 0 to', newMax, '(Current time at position', filledHistoryCount - 1, ')');
+        
+        // Verify predictions are accessible
+        if (predictionsCount > 0 && allLocations.length > filledHistoryCount) {
+            const firstPredictionIndex = filledHistoryCount;
+            const firstPrediction = allLocations[firstPredictionIndex];
+            console.log('First prediction accessible at index', firstPredictionIndex, 'timestamp:', firstPrediction ? firstPrediction.timestamp : 'null');
+        }
         
         // Only set the value if it's not already set or is invalid
-        if (!slider.value || slider.value > slider.max) {
+        if (!slider.value || slider.value === '' || parseInt(slider.value) > newMax) {
             // Only set a value if we have predictions (full 48-hour range)
             // If no predictions yet, leave slider unpositioned until predictions are generated
-            if (this.locationHistory.getPredictions().length > 0) {
-                // Set to current time position (middle of full range)
-                slider.value = historyCount - 1;
+            if (predictionsCount > 0 && filledHistoryCount > 0) {
+                // Set to current time position (last history entry before predictions)
+                slider.value = filledHistoryCount - 1;
                 this.currentIndex = this.getInvertedIndex(parseInt(slider.value));
+                console.log('Set slider to current time position:', filledHistoryCount - 1);
             } else {
                 // No predictions yet, don't set a value
                 this.currentIndex = 0;
+                console.log('No predictions yet, slider not positioned');
             }
         } else {
+            // Slider already has a valid value, just update the index
             this.currentIndex = this.getInvertedIndex(parseInt(slider.value));
+            console.log('Slider already positioned at:', slider.value, 'index:', this.currentIndex);
         }
+        
+        // Update navigation button states after range update
+        this.updateNavigationButtonStates();
     }
 
     // Convert slider value to actual index
@@ -138,6 +272,7 @@ class HistorySlider {
 
     updateDisplay() {
         const location = this.locationHistory.getLocationAt(this.currentIndex);
+        console.log('updateDisplay - currentIndex:', this.currentIndex, 'location:', location ? 'found' : 'not found');
         if (location) {
             const timeDisplay = document.getElementById('time-display');
             const date = new Date(location.timestamp);
@@ -152,22 +287,25 @@ class HistorySlider {
             }
             
             timeDisplay.textContent = displayText;
+            console.log('updateDisplay - Updated time display to:', displayText);
             
             // Update "Now" indicator
             this.updateNowIndicator();
             
-            // Update map and info through callback
+            // Always call updateMapCallback - it will handle placeholder entries
             this.updateMapCallback(location);
+        } else {
+            console.warn('updateDisplay - No location found at index:', this.currentIndex);
         }
     }
 
     updateNowIndicator() {
         const slider = document.getElementById('history-slider');
-        const historyCount = this.locationHistory.getLocations().length;
+        const filledHistoryCount = this.locationHistory.getFilledHistoryCount();
         const nowMarker = document.querySelector('.range-marker.center');
         
         if (nowMarker) {
-            const isAtCurrentTime = parseInt(slider.value) === historyCount - 1;
+            const isAtCurrentTime = parseInt(slider.value) === filledHistoryCount - 1;
             if (isAtCurrentTime) {
                 nowMarker.classList.add('highlighted');
             } else {

@@ -47,6 +47,23 @@
             </div>
             <div class="card map-container">
                 <div id="map"></div>
+                <div id="no-data-message" class="no-data-message" style="display: none;">
+                    <i class="fas fa-exclamation-triangle"></i>
+                    <span>Location data is not available for this time</span>
+                </div>
+                <div id="path-legend" class="path-legend">
+                    <h3>Path Legend</h3>
+                    <div class="legend-items">
+                        <div class="legend-item clickable" data-path-type="predicted" id="legend-predicted">
+                            <span class="legend-color" style="background-color: #FF6B6B;"></span>
+                            <span class="legend-label">Predicted Path (Polynomial)</span>
+                        </div>
+                        <div class="legend-item clickable" data-path-type="sgp4" id="legend-sgp4">
+                            <span class="legend-color" style="background-color: #4ECDC4;"></span>
+                            <span class="legend-label">True Path (SGP4) - Future</span>
+                        </div>
+                    </div>
+                </div>
             </div>
             <div class="card" id="history-controls">
                 <h2>Location History & Predictions</h2>
@@ -57,6 +74,24 @@
                         <span class="range-marker right clickable" id="nav-24h-future">+24h</span>
                     </div>
                     <input type="range" id="history-slider" min="0" value="0" class="slider">
+                    <div class="slider-nav-controls">
+                        <button class="nav-button nav-step-button" id="nav-step-back" aria-label="Previous step" title="Previous (5 min)">
+                            <i class="fas fa-chevron-left"></i>
+                        </button>
+                        <div class="time-skip-buttons">
+                            <button class="nav-button time-skip-button" id="nav-back-1h" title="Go back 1 hour">-1h</button>
+                            <button class="nav-button time-skip-button" id="nav-back-15min" title="Go back 15 minutes">-15m</button>
+                            <button class="nav-button time-skip-button" id="nav-back-5min" title="Go back 5 minutes">-5m</button>
+                        </div>
+                        <div class="time-skip-buttons">
+                            <button class="nav-button time-skip-button" id="nav-forward-5min" title="Go forward 5 minutes">+5m</button>
+                            <button class="nav-button time-skip-button" id="nav-forward-15min" title="Go forward 15 minutes">+15m</button>
+                            <button class="nav-button time-skip-button" id="nav-forward-1h" title="Go forward 1 hour">+1h</button>
+                        </div>
+                        <button class="nav-button nav-step-button" id="nav-step-forward" aria-label="Next step" title="Next (5 min)">
+                            <i class="fas fa-chevron-right"></i>
+                        </button>
+                    </div>
                     <div id="time-display" class="time-display">No history available</div>
                 </div>
                 <div id="predictions-loading" class="predictions-loading">
@@ -67,6 +102,51 @@
             </div>
             <div class="card" id="error" style="display: none;">
                 <p class="error-message"></p>
+            </div>
+            <div class="card" id="prediction-accuracy">
+                <h2>Prediction Accuracy (Next Hour)</h2>
+                <div id="prediction-table-container">
+                    <table id="prediction-table">
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>Predicted Location</th>
+                                <th>Actual Location</th>
+                                <th>Distance</th>
+                                <th>Lat/Lon Error</th>
+                                <th>Min Ahead</th>
+                            </tr>
+                        </thead>
+                        <tbody id="prediction-table-body">
+                            <tr>
+                                <td colspan="6" class="no-predictions">Predictions will appear here once calculated...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="card" id="historical-validation">
+                <h2>Historical Validation (Past Hour)</h2>
+                <p class="validation-description">Predictions made 1 hour ago compared with actual data using polynomial equations</p>
+                <div id="historical-table-container">
+                    <table id="historical-table">
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>Predicted Location</th>
+                                <th>Actual Location</th>
+                                <th>Distance</th>
+                                <th>Lat/Lon Error</th>
+                                <th>Min Ahead</th>
+                            </tr>
+                        </thead>
+                        <tbody id="historical-table-body">
+                            <tr>
+                                <td colspan="7" class="no-predictions">Historical validation will appear once we have 1+ hour of data...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
             </div>
             <div class="refresh-container">
                 <div class="auto-refresh-indicator">
@@ -107,10 +187,10 @@
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
             integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
             crossorigin=""></script>
-            
+    
     <!-- Our JavaScript -->
     <script type="module" src="./js/config.js"></script>
-    <script type="module" src="./js/issPrediction.js"></script>
+    <!-- issPrediction.js removed - predictions now come from API -->
     <script type="module" src="./js/main.js"></script>
     <script type="module" src="./js/chat.js"></script>
     <script type="module" src="./js/message.js"></script>

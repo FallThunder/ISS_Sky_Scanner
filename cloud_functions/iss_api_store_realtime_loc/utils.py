@@ -21,9 +21,12 @@ except Exception as e:
 
 collection_name = 'iss_loc_history'
 
-def get_id_token() -> str:
+def get_id_token(target_audience: str = None) -> str:
     """
     Gets an ID token for authenticating with other Cloud Functions.
+    
+    Args:
+        target_audience: URL of the target Cloud Function. If None, uses default.
     """
     try:
         logger.info("Getting ID token...")
@@ -32,7 +35,8 @@ def get_id_token() -> str:
         logger.info(f"Got credentials for project: {project}")
         
         # Request a token with the target audience
-        target_audience = 'https://iss-api-get-realtime-loc-cklav7ht2q-ue.a.run.app'
+        if target_audience is None:
+            target_audience = 'https://iss-api-get-realtime-loc-cklav7ht2q-ue.a.run.app'
         auth_req = Request()
         token = id_token.fetch_id_token(auth_req, target_audience)
         logger.info("Successfully obtained ID token")
@@ -102,9 +106,71 @@ def store_iss_location() -> Dict[str, Any]:
         doc_ref.set(dict(doc_data))  # Convert OrderedDict to dict for Firestore
         
         logger.info(f"Successfully stored ISS location data with ID: {doc_ref.id}")
-        return dict(doc_data)  # Convert OrderedDict to dict for JSON response
+        result = dict(doc_data)  # Convert OrderedDict to dict for JSON response
+        result['document_id'] = doc_ref.id  # Add document ID for linking predictions
+        return result
 
     except Exception as e:
         error_msg = f"Error storing ISS location: {str(e)}"
         logger.error(error_msg)
         return {'error': error_msg}
+
+
+def generate_predictions_for_location(location_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Calls the iss_api_generate_predictions function to generate predictions.
+    This function handles errors gracefully - if prediction generation fails,
+    it logs the error but doesn't fail the entire operation.
+    
+    Args:
+        location_data: Dictionary containing location data with document_id
+        
+    Returns:
+        Dictionary containing prediction result or None if failed
+    """
+    try:
+        # Get the prediction function URL
+        import os
+        prediction_url = os.environ.get(
+            'PREDICTION_FUNCTION_URL',
+            'https://iss-api-generate-predictions-cklav7ht2q-ue.a.run.app'
+        )
+        
+        logger.info("Generating predictions for stored location...")
+        
+        # Get authentication token
+        token = get_id_token(target_audience=prediction_url)
+        
+        # Prepare request payload
+        payload = {
+            'timestamp': location_data['timestamp'],
+            'latitude': location_data['latitude'],
+            'longitude': location_data['longitude'],
+            'document_id': location_data['document_id'],
+            'location': location_data.get('location', ''),
+            'country_code': location_data.get('country_code', '')
+        }
+        
+        # Make authenticated request
+        headers = {
+            'Authorization': f'Bearer {token}',
+            'Content-Type': 'application/json'
+        }
+        
+        logger.info(f"Calling prediction function at {prediction_url}...")
+        response = requests.post(
+            prediction_url,
+            json=payload,
+            headers=headers,
+            timeout=30  # Longer timeout for prediction generation
+        )
+        response.raise_for_status()
+        result = response.json()
+        
+        logger.info(f"Successfully generated predictions: {result.get('data', {}).get('prediction_count', 0)} predictions")
+        return result
+        
+    except Exception as e:
+        # Log error but don't fail - prediction generation is non-critical
+        logger.warning(f"Failed to generate predictions (non-critical): {str(e)}")
+        return None

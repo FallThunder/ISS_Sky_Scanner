@@ -32,10 +32,21 @@ def iss_api_store_realtime_loc(cloud_event):
         
         if result.get('error'):
             logger.error(f"Error storing ISS location: {result.get('error')}")
+            # If NASA API failed, we can't generate predictions - return error
             return {'error': result.get('error')}, 500
             
         # Log success with the ISS timestamp
         logger.info(f"Successfully stored ISS location at timestamp {result['timestamp']}")
+        
+        # Generate predictions for the stored location
+        # This is non-critical - if it fails, we still return success for location storage
+        from utils import generate_predictions_for_location
+        prediction_result = generate_predictions_for_location(result)
+        if prediction_result:
+            logger.info("Predictions generated successfully")
+        else:
+            logger.warning("Prediction generation failed, but location was stored successfully")
+        
         return {'status': 'success', 'data': result}, 200
 
     except Exception as e:

@@ -7,8 +7,7 @@ const PREDICTION_ENTRIES = 288; // 24 hours of predictions (1 entry every 5 minu
 class LocationHistoryManager {
     constructor() {
         this.locations = this.loadFromStorage() || [];
-        this.predictions = []; // Future predictions
-        this.predictor = null; // Will be set when ISSPredictor is imported
+        this.predictions = []; // Future predictions (now from API)
     }
 
     // Load history from session storage
@@ -104,36 +103,77 @@ class LocationHistoryManager {
         };
     }
 
-    // Set the predictor instance
-    setPredictor(predictor) {
-        this.predictor = predictor;
-    }
-
-    // Generate predictions based on current location
-    generatePredictions(currentLocation) {
-        if (!this.predictor || !currentLocation) {
-            return [];
+    // Set predictions from API data
+    setPredictionsFromAPI(predictionsData) {
+        if (!predictionsData) {
+            this.predictions = [];
+            return;
         }
-
-        try {
-            // Get recent history for velocity estimation (last 2-3 points)
-            const recentHistory = this.locations.slice(0, Math.min(3, this.locations.length));
-            
-            // Generate predictions for the next 24 hours (every 5 minutes)
-            this.predictions = this.predictor.generatePredictionPath(
-                currentLocation, 
-                5, // Start 5 minutes from now
-                1440, // End 24 hours from now
-                5, // Every 5 minutes
-                recentHistory // Pass recent history for velocity estimation
-            );
-            
-            console.log('Generated', this.predictions.length, 'predictions with velocity estimation');
-            return this.predictions;
-        } catch (error) {
-            console.error('Error generating predictions:', error);
-            return [];
+        
+        // Combine orbital mechanics and SGP4 predictions
+        const allPredictions = [];
+        
+        // Add orbital mechanics predictions (18 predictions)
+        if (predictionsData.orbital_mechanics && Array.isArray(predictionsData.orbital_mechanics)) {
+            predictionsData.orbital_mechanics.forEach(pred => {
+                allPredictions.push({
+                    timestamp: pred.timestamp,
+                    latitude: pred.latitude.toString(),
+                    longitude: pred.longitude.toString(),
+                    isPredicted: true,
+                    method: pred.method || 'orbital_mechanics',
+                    minutes_ahead: pred.minutes_ahead
+                });
+            });
         }
+        
+        // Add SGP4 predictions if available (can be multiple from different prediction cycles)
+        if (predictionsData.sgp4) {
+            // Handle both array and single object formats
+            const sgp4Predictions = Array.isArray(predictionsData.sgp4) 
+                ? predictionsData.sgp4 
+                : [predictionsData.sgp4];
+            
+            sgp4Predictions.forEach(pred => {
+                allPredictions.push({
+                    timestamp: pred.timestamp,
+                    latitude: pred.latitude.toString(),
+                    longitude: pred.longitude.toString(),
+                    isPredicted: true,
+                    method: 'sgp4',
+                    minutes_ahead: pred.minutes_ahead
+                });
+            });
+        }
+        
+        // Sort by timestamp (earliest first)
+        allPredictions.sort((a, b) => {
+            return new Date(a.timestamp) - new Date(b.timestamp);
+        });
+        
+        this.predictions = allPredictions;
+        const sgp4Count = Array.isArray(predictionsData.sgp4) 
+            ? predictionsData.sgp4.length 
+            : (predictionsData.sgp4 ? 1 : 0);
+        console.log('Set', this.predictions.length, 'predictions from API (', 
+            predictionsData.orbital_mechanics?.length || 0, 'orbital mechanics +', 
+            sgp4Count, 'SGP4)');
+        
+        // Log prediction distribution by timestamp for debugging
+        const timestampGroups = {};
+        allPredictions.forEach(pred => {
+            const ts = pred.timestamp;
+            if (!timestampGroups[ts]) {
+                timestampGroups[ts] = [];
+            }
+            timestampGroups[ts].push(pred.method);
+        });
+        console.log('Prediction distribution by timestamp:', Object.keys(timestampGroups).length, 'unique timestamps');
+        Object.entries(timestampGroups).forEach(([ts, methods]) => {
+            if (methods.length > 1) {
+                console.log(`  ${ts}: ${methods.length} predictions (${methods.join(', ')})`);
+            }
+        });
     }
 
     // Get all stored locations
@@ -141,24 +181,118 @@ class LocationHistoryManager {
         return this.locations;
     }
 
+    // Get filled history count (always 288 for 24 hours with 5-minute intervals)
+    getFilledHistoryCount() {
+        const filledHistory = this.fillGapsInHistory();
+        return filledHistory.length;
+    }
+
     // Get all predictions
     getPredictions() {
         return this.predictions;
     }
 
+    // Fill gaps in history with placeholder entries for missing time slots
+    fillGapsInHistory() {
+        if (this.locations.length === 0) {
+            return [];
+        }
+        
+        // Get the newest location timestamp (first in array since sorted newest first)
+        const newestLocation = this.locations[0];
+        if (!newestLocation || !newestLocation.timestamp) {
+            return [...this.locations].reverse();
+        }
+        
+        const newestTime = new Date(newestLocation.timestamp);
+        // Round newest time to nearest 5 minutes
+        const newestMinutes = Math.round(newestTime.getMinutes() / 5) * 5;
+        const roundedNewestTime = new Date(newestTime);
+        roundedNewestTime.setMinutes(newestMinutes);
+        roundedNewestTime.setSeconds(0);
+        roundedNewestTime.setMilliseconds(0);
+        
+        // Calculate oldest time (24 hours before newest, rounded to 5-minute interval)
+        const oldestTime = new Date(roundedNewestTime.getTime() - (24 * 60 * 60 * 1000));
+        const oldestMinutes = Math.round(oldestTime.getMinutes() / 5) * 5;
+        const roundedOldestTime = new Date(oldestTime);
+        roundedOldestTime.setMinutes(oldestMinutes);
+        roundedOldestTime.setSeconds(0);
+        roundedOldestTime.setMilliseconds(0);
+        
+        // Create a map of existing locations by rounded timestamp (5-minute intervals)
+        const locationMap = new Map();
+        this.locations.forEach(loc => {
+            const locTime = new Date(loc.timestamp);
+            // Round to nearest 5 minutes
+            const roundedMinutes = Math.round(locTime.getMinutes() / 5) * 5;
+            const roundedTime = new Date(locTime);
+            roundedTime.setMinutes(roundedMinutes);
+            roundedTime.setSeconds(0);
+            roundedTime.setMilliseconds(0);
+            const key = roundedTime.getTime();
+            locationMap.set(key, loc);
+        });
+        
+        // Generate filled array with placeholders for missing slots
+        const filledHistory = [];
+        const fiveMinutes = 5 * 60 * 1000; // 5 minutes in milliseconds
+        
+        // Start from oldest time and go forward to newest time (inclusive)
+        for (let time = roundedOldestTime.getTime(); time <= roundedNewestTime.getTime(); time += fiveMinutes) {
+            const roundedTime = new Date(time);
+            const key = roundedTime.getTime();
+            
+            if (locationMap.has(key)) {
+                // Use existing location
+                filledHistory.push(locationMap.get(key));
+            } else {
+                // Create placeholder entry
+                filledHistory.push({
+                    timestamp: roundedTime.toISOString(),
+                    isEmpty: true,
+                    latitude: null,
+                    longitude: null,
+                    location: null
+                });
+            }
+        }
+        
+        // Return oldest first (for consistency with previous behavior)
+        return filledHistory;
+    }
+
     // Get combined history and predictions for the full 48-hour range
     getAllLocations() {
-        // Combine historical data (oldest first) with predictions (oldest first)
-        // So: [oldest_history, ..., newest_history, earliest_prediction, ..., latest_prediction]
-        const reversedHistory = [...this.locations].reverse(); // Reverse to get oldest first
-        const allLocations = [...reversedHistory, ...this.predictions];
+        // Get filled history with placeholders (oldest first)
+        const filledHistory = this.fillGapsInHistory();
+        
+        // Ensure predictions are sorted by timestamp (earliest first)
+        const sortedPredictions = [...this.predictions].sort((a, b) => {
+            return new Date(a.timestamp) - new Date(b.timestamp);
+        });
+        
+        const allLocations = [...filledHistory, ...sortedPredictions];
+        
+        console.log('getAllLocations - Filled history count:', filledHistory.length, 'Predictions count:', sortedPredictions.length, 'Total:', allLocations.length);
+        if (sortedPredictions.length > 0) {
+            console.log('First prediction:', sortedPredictions[0].timestamp, 'Last prediction:', sortedPredictions[sortedPredictions.length - 1].timestamp);
+        }
+        
         return allLocations;
     }
 
     // Get location at specific index (from combined history + predictions)
     getLocationAt(index) {
         const allLocations = this.getAllLocations();
-        return allLocations[index];
+        const historyCount = this.locations.length;
+        const location = allLocations[index];
+        
+        if (index >= historyCount && location) {
+            console.log('Accessing prediction at index', index, 'timestamp:', location.timestamp, 'isPredicted:', location.isPredicted);
+        }
+        
+        return location;
     }
 
     // Get location at specific index from history only

@@ -18,7 +18,6 @@
     <link rel="stylesheet" href="./css/styles.css">
     <link rel="stylesheet" href="./css/chat.css">
     <link rel="stylesheet" href="./css/message-box.css">
-    <link rel="stylesheet" href="./css/changelog.css">
 </head>
 <body>
     <!-- Website Message Box -->
@@ -217,13 +216,11 @@
     <script type="module" src="./js/chat.js"></script>
     <script type="module" src="./js/message.js"></script>
     <script type="module">
-        import { showChangelog } from './js/changelog.js';
         import { initMetricsPage, handleMetricsViewShown } from './js/metrics.js';
         
         let metricsInitialized = false;
         
         document.addEventListener('DOMContentLoaded', () => {
-            showChangelog();
             // Initialize metrics page when metrics view is shown
             window.addEventListener('metricsViewShown', () => {
                 if (!metricsInitialized) {

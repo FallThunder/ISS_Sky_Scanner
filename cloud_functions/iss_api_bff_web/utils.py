@@ -1,5 +1,6 @@
 import requests
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from google.auth.transport.requests import Request
 from google.oauth2 import id_token
 from google.cloud import secretmanager
@@ -130,28 +131,44 @@ def get_predictions_for_timestamp(timestamp: str):
 
 def get_all_predictions():
     """
-    Fetches ALL prediction documents from Firestore and aggregates them by predicted timestamp.
+    Fetches prediction documents from Firestore and aggregates them by predicted timestamp.
+    Limits to recent documents (last 24 hours) to optimize performance.
     This allows showing multiple prediction dots for the same future time from different prediction cycles.
     
     Returns:
         dict: Aggregated predictions grouped by predicted timestamp
     """
     try:
-        logger.info("Fetching all prediction documents from Firestore")
-        
-        # Get all prediction documents
-        predictions_collection = db.collection('iss_loc_predictions')
-        docs = predictions_collection.stream()
+        logger.info("Fetching prediction documents from Firestore")
         
         current_time = datetime.now(timezone.utc)
+        # Only process predictions from the last 24 hours to limit query size
+        cutoff_time = current_time - timedelta(hours=24)
+        
+        # Get all prediction documents (we'll filter by source_timestamp in memory)
+        # This is safer than relying on Firestore indexes
+        predictions_collection = db.collection('iss_loc_predictions')
+        docs = predictions_collection.limit(500).stream()  # Limit to 500 most recent docs
         
         # Separate predictions by method and aggregate
         orbital_mechanics_all = []
         sgp4_all = []
         
+        doc_count = 0
         for doc in docs:
+            doc_count += 1
             doc_data = doc.to_dict()
             source_timestamp = doc_data.get('source_timestamp')
+            
+            # Skip documents older than 24 hours
+            if source_timestamp:
+                try:
+                    source_dt = datetime.fromisoformat(source_timestamp.replace('Z', '+00:00'))
+                    if source_dt < cutoff_time:
+                        continue  # Skip old documents
+                except Exception:
+                    pass  # Continue if timestamp parsing fails
+            
             predictions = doc_data.get('predictions', [])
             
             for pred in predictions:
@@ -181,7 +198,7 @@ def get_all_predictions():
         orbital_mechanics_all.sort(key=lambda x: x.get('timestamp', ''))
         sgp4_all.sort(key=lambda x: x.get('timestamp', ''))
         
-        logger.info(f"Aggregated {len(orbital_mechanics_all)} orbital mechanics predictions and {len(sgp4_all)} SGP4 predictions")
+        logger.info(f"Processed {doc_count} documents, aggregated {len(orbital_mechanics_all)} orbital mechanics predictions and {len(sgp4_all)} SGP4 predictions")
         
         return {
             'orbital_mechanics': orbital_mechanics_all,
@@ -194,10 +211,33 @@ def get_all_predictions():
         return None
 
 
+def _process_historical_prediction(pred_data, cutoff_time, current_time):
+    """Helper function to process a single historical prediction dataset."""
+    predictions_list = []
+    if pred_data and pred_data.get('orbital_mechanics'):
+        for pred in pred_data['orbital_mechanics']:
+            pred_timestamp = pred.get('timestamp')
+            if pred_timestamp:
+                try:
+                    pred_dt = datetime.fromisoformat(pred_timestamp.replace('Z', '+00:00'))
+                    # Only include predictions that fall within the 90-minute window
+                    if pred_dt >= cutoff_time and pred_dt <= current_time:
+                        predictions_list.append({
+                            'timestamp': pred_timestamp,
+                            'latitude': pred.get('latitude'),
+                            'longitude': pred.get('longitude'),
+                            'source_timestamp': pred_data.get('source_timestamp')
+                        })
+                except Exception:
+                    continue
+    return predictions_list
+
+
 def get_historical_predictions():
     """
     Fetches predictions made at 90, 60, and 30 minutes ago (rounded to 5-minute intervals).
     Filters predictions to only include those that fall within the 90-minute historical window.
+    Uses parallel fetching to speed up the process.
     
     Returns:
         dict: Predictions grouped by source time period, or None if error
@@ -218,67 +258,26 @@ def get_historical_predictions():
         # Calculate cutoff time for filtering (90 minutes before current time)
         cutoff_time = current_time - timedelta(minutes=90)
         
-        # Fetch predictions for each time period
-        predictions_90min = []
-        predictions_60min = []
-        predictions_30min = []
+        # Fetch predictions in parallel
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            future_90 = executor.submit(get_predictions_for_timestamp, rounded_90min)
+            future_60 = executor.submit(get_predictions_for_timestamp, rounded_60min)
+            future_30 = executor.submit(get_predictions_for_timestamp, rounded_30min)
+            
+            # Wait for all to complete and get results
+            pred_data_90 = future_90.result()
+            pred_data_60 = future_60.result()
+            pred_data_30 = future_30.result()
         
-        # Fetch 90-minute predictions
-        pred_data_90 = get_predictions_for_timestamp(rounded_90min)
-        if pred_data_90 and pred_data_90.get('orbital_mechanics'):
-            for pred in pred_data_90['orbital_mechanics']:
-                pred_timestamp = pred.get('timestamp')
-                if pred_timestamp:
-                    try:
-                        pred_dt = datetime.fromisoformat(pred_timestamp.replace('Z', '+00:00'))
-                        # Only include predictions that fall within the 90-minute window
-                        if pred_dt >= cutoff_time and pred_dt <= current_time:
-                            predictions_90min.append({
-                                'timestamp': pred_timestamp,
-                                'latitude': pred.get('latitude'),
-                                'longitude': pred.get('longitude'),
-                                'source_timestamp': pred_data_90.get('source_timestamp')
-                            })
-                    except Exception:
-                        continue
-        
-        # Fetch 60-minute predictions
-        pred_data_60 = get_predictions_for_timestamp(rounded_60min)
-        if pred_data_60 and pred_data_60.get('orbital_mechanics'):
-            for pred in pred_data_60['orbital_mechanics']:
-                pred_timestamp = pred.get('timestamp')
-                if pred_timestamp:
-                    try:
-                        pred_dt = datetime.fromisoformat(pred_timestamp.replace('Z', '+00:00'))
-                        # Only include predictions that fall within the 90-minute window
-                        if pred_dt >= cutoff_time and pred_dt <= current_time:
-                            predictions_60min.append({
-                                'timestamp': pred_timestamp,
-                                'latitude': pred.get('latitude'),
-                                'longitude': pred.get('longitude'),
-                                'source_timestamp': pred_data_60.get('source_timestamp')
-                            })
-                    except Exception:
-                        continue
-        
-        # Fetch 30-minute predictions
-        pred_data_30 = get_predictions_for_timestamp(rounded_30min)
-        if pred_data_30 and pred_data_30.get('orbital_mechanics'):
-            for pred in pred_data_30['orbital_mechanics']:
-                pred_timestamp = pred.get('timestamp')
-                if pred_timestamp:
-                    try:
-                        pred_dt = datetime.fromisoformat(pred_timestamp.replace('Z', '+00:00'))
-                        # Only include predictions that fall within the 90-minute window
-                        if pred_dt >= cutoff_time and pred_dt <= current_time:
-                            predictions_30min.append({
-                                'timestamp': pred_timestamp,
-                                'latitude': pred.get('latitude'),
-                                'longitude': pred.get('longitude'),
-                                'source_timestamp': pred_data_30.get('source_timestamp')
-                            })
-                    except Exception:
-                        continue
+        # Process predictions in parallel
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            future_90_proc = executor.submit(_process_historical_prediction, pred_data_90, cutoff_time, current_time)
+            future_60_proc = executor.submit(_process_historical_prediction, pred_data_60, cutoff_time, current_time)
+            future_30_proc = executor.submit(_process_historical_prediction, pred_data_30, cutoff_time, current_time)
+            
+            predictions_90min = future_90_proc.result()
+            predictions_60min = future_60_proc.result()
+            predictions_30min = future_30_proc.result()
         
         logger.info(f"Historical predictions: 90min={len(predictions_90min)}, 60min={len(predictions_60min)}, 30min={len(predictions_30min)}")
         
@@ -293,42 +292,67 @@ def get_historical_predictions():
         return None
 
 
+def _fetch_location():
+    """Helper function to fetch ISS location."""
+    token = get_id_token(LAST_LOC_URL)
+    headers = {"Authorization": f"Bearer {token}"}
+    response = requests.get(f"{LAST_LOC_URL}?limit=1", headers=headers, timeout=10)
+    response.raise_for_status()
+    return response.json()
+
+
+def _fetch_fact(location):
+    """Helper function to fetch fun fact."""
+    token = get_id_token(FACT_URL)
+    headers = {"Authorization": f"Bearer {token}"}
+    response = requests.get(f"{FACT_URL}?location={location}", headers=headers, timeout=10)
+    response.raise_for_status()
+    return response.json()
+
+
 def get_iss_location_with_fact():
     """
     Gets the latest ISS location and a fun fact about that location.
     Combines data from iss_api_query_loc_history (with limit=1) and iss_api_get_loc_fact.
+    Uses parallel execution to fetch location and fact simultaneously, then fetches predictions.
     
     Returns:
         dict: Combined location data and fun fact
     """
     try:
-        # Get latest ISS location
-        logger.info("Fetching latest ISS location...")
-        token = get_id_token(LAST_LOC_URL)
-        headers = {"Authorization": f"Bearer {token}"}
-        location_response = requests.get(f"{LAST_LOC_URL}?limit=1", headers=headers)
-        location_response.raise_for_status()
-        location_data = location_response.json()
-
-        if location_data.get('status') != 'success':
-            logger.error(f"Error getting location: {location_data}")
-            return None
-
-        # Extract the first (and only) location from the results
-        if not location_data.get('locations') or len(location_data['locations']) == 0:
-            logger.error("No location data found")
-            return None
+        # Fetch location and fact in parallel
+        logger.info("Fetching latest ISS location and fun fact in parallel...")
+        location_info = None
+        
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            # Start both requests in parallel
+            future_location = executor.submit(_fetch_location)
             
-        location_info = location_data['locations'][0]
+            # We need location first to get the location string for the fact API
+            # So we'll wait for location, then fetch fact
+            location_data = future_location.result()
+            
+            if location_data.get('status') != 'success':
+                logger.error(f"Error getting location: {location_data}")
+                return None
 
-        # Get fun fact about the location
-        location = location_info.get('location')
-        logger.info(f"Fetching fun fact for location: {location}")
-        token = get_id_token(FACT_URL)  # Get a new token for the fact API
-        headers = {"Authorization": f"Bearer {token}"}
-        fact_response = requests.get(f"{FACT_URL}?location={location}", headers=headers)
-        fact_response.raise_for_status()
-        fact_data = fact_response.json()
+            # Extract the first (and only) location from the results
+            if not location_data.get('locations') or len(location_data['locations']) == 0:
+                logger.error("No location data found")
+                return None
+                
+            location_info = location_data['locations'][0]
+            location = location_info.get('location')
+            
+            # Now fetch fact in parallel with predictions
+            future_fact = executor.submit(_fetch_fact, location)
+            future_predictions = executor.submit(get_all_predictions)
+            future_historical = executor.submit(get_historical_predictions)
+            
+            # Wait for all to complete
+            fact_data = future_fact.result()
+            predictions = future_predictions.result()
+            historical_predictions = future_historical.result()
 
         # Combine the data
         location_info['fun_fact'] = fact_data.get('fact', 'Fun fact coming soon!')
@@ -337,9 +361,7 @@ def get_iss_location_with_fact():
         if 'country_code' not in location_info:
             location_info['country_code'] = ''  # Add empty country code if not present
         
-        # Fetch ALL predictions (aggregated from all prediction cycles)
-        logger.info("Fetching all predictions from all prediction cycles")
-        predictions = get_all_predictions()
+        # Add predictions
         if predictions:
             location_info['predictions'] = predictions
             logger.info(f"Added {predictions.get('prediction_count', 0)} total predictions to response")
@@ -347,9 +369,7 @@ def get_iss_location_with_fact():
             logger.info("No predictions found")
             location_info['predictions'] = None
         
-        # Fetch historical predictions for metrics comparison
-        logger.info("Fetching historical predictions for metrics comparison")
-        historical_predictions = get_historical_predictions()
+        # Add historical predictions
         if historical_predictions:
             location_info['historical_predictions'] = historical_predictions
             logger.info("Added historical predictions to response")

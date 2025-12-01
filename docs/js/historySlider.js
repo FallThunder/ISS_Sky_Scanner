@@ -56,12 +56,12 @@ class HistorySlider {
             });
         }
 
-        // +24h button
-        const nav24hFuture = document.getElementById('nav-24h-future');
-        if (nav24hFuture) {
-            nav24hFuture.addEventListener('click', () => {
+        // +90m button (latest prediction)
+        const nav90mFuture = document.getElementById('nav-90m-future');
+        if (nav90mFuture) {
+            nav90mFuture.addEventListener('click', () => {
                 const allLocations = this.locationHistory.getAllLocations();
-                this.setSliderValue(allLocations.length - 1); // Latest prediction
+                this.setSliderValue(allLocations.length - 1); // Latest prediction (90 minutes ahead)
             });
         }
 
@@ -81,17 +81,17 @@ class HistorySlider {
         }
 
         // Time skip buttons
-        const navBack5min = document.getElementById('nav-back-5min');
-        if (navBack5min) {
-            navBack5min.addEventListener('click', () => {
-                this.navigateBySteps(-1); // 5 minutes = 1 step
-            });
-        }
-
         const navBack15min = document.getElementById('nav-back-15min');
         if (navBack15min) {
             navBack15min.addEventListener('click', () => {
                 this.navigateBySteps(-3); // 15 minutes = 3 steps
+            });
+        }
+
+        const navBack30min = document.getElementById('nav-back-30min');
+        if (navBack30min) {
+            navBack30min.addEventListener('click', () => {
+                this.navigateBySteps(-6); // 30 minutes = 6 steps
             });
         }
 
@@ -102,17 +102,17 @@ class HistorySlider {
             });
         }
 
-        const navForward5min = document.getElementById('nav-forward-5min');
-        if (navForward5min) {
-            navForward5min.addEventListener('click', () => {
-                this.navigateBySteps(1); // 5 minutes = 1 step
-            });
-        }
-
         const navForward15min = document.getElementById('nav-forward-15min');
         if (navForward15min) {
             navForward15min.addEventListener('click', () => {
                 this.navigateBySteps(3); // 15 minutes = 3 steps
+            });
+        }
+
+        const navForward30min = document.getElementById('nav-forward-30min');
+        if (navForward30min) {
+            navForward30min.addEventListener('click', () => {
+                this.navigateBySteps(6); // 30 minutes = 6 steps
             });
         }
 
@@ -153,8 +153,8 @@ class HistorySlider {
         // Disable back buttons if at the beginning
         const backButtons = [
             'nav-step-back',
-            'nav-back-5min',
             'nav-back-15min',
+            'nav-back-30min',
             'nav-back-1h'
         ];
         backButtons.forEach(id => {
@@ -167,8 +167,8 @@ class HistorySlider {
         // Disable forward buttons if at the end
         const forwardButtons = [
             'nav-step-forward',
-            'nav-forward-5min',
             'nav-forward-15min',
+            'nav-forward-30min',
             'nav-forward-1h'
         ];
         forwardButtons.forEach(id => {

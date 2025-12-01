@@ -37,10 +37,10 @@ def get_id_token(target_audience: str = None) -> str:
         # Request a token with the target audience
         if target_audience is None:
             target_audience = 'https://iss-api-get-realtime-loc-cklav7ht2q-ue.a.run.app'
-        auth_req = Request()
-        token = id_token.fetch_id_token(auth_req, target_audience)
-        logger.info("Successfully obtained ID token")
-        return token
+            auth_req = Request()
+            token = id_token.fetch_id_token(auth_req, target_audience)
+            logger.info("Successfully obtained ID token")
+            return token
     except Exception as e:
         logger.error(f"Error getting ID token: {str(e)}")
         raise

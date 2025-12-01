@@ -20,100 +20,120 @@ function hidePredictionsLoading() {
     const loadingText = document.getElementById('loading-text');
     
     if (loadingElement && spinner && checkmark && loadingText) {
-        // Hide spinner and show checkmark
         spinner.style.display = 'none';
         checkmark.style.display = 'flex';
         loadingText.textContent = 'Predictions ready!';
         
-        // Start fade out after checkmark animation completes
         setTimeout(() => {
             loadingElement.classList.add('fade-out');
-            
-            // Hide completely after fade animation
             setTimeout(() => {
                 loadingElement.classList.add('hidden');
-            }, 800); // Match CSS transition duration
-        }, 900); // Wait for checkmark animation to complete
+            }, 800);
+        }, 900);
     }
 }
 
-// Initialize map
 let map = null;
 let issMarker = null;
-let predictionPathPolylines = []; // Store prediction path polylines (multiple copies for world wrap)
-let sgp4PathPolylines = []; // Store SGP4 true path polylines (multiple copies for world wrap)
-let predictionMarkers = []; // Store all prediction point markers
-let currentISSLocation = null; // Store the most recent current ISS location (not historical)
-let isCurrentLocationLoaded = false; // Flag to track if current ISS location has been loaded
+let predictionPathPolylines = [];
+let predictionMarkers = [];
+let currentISSLocation = null;
+let isCurrentLocationLoaded = false;
 
-// Path visibility state
 let pathVisibility = {
-    predicted: true,
-    sgp4: true
+    predicted: true
 };
 
-// Auto-refresh configuration
-const AUTO_REFRESH_INTERVAL = 5 * 60 * 1000; // 5 minutes in milliseconds
-const RETRY_INTERVAL = 7 * 1000; // 7 seconds for retry attempts
-const MAX_RETRY_ATTEMPTS = 5; // Maximum number of retry attempts
-const RETRY_STOP_THRESHOLD = 60 * 1000; // Stop retrying if within 60 seconds of next scheduled update
+const AUTO_REFRESH_INTERVAL = 5 * 60 * 1000;
+const RETRY_INTERVAL = 7 * 1000;
+const MAX_RETRY_ATTEMPTS = 5;
+const RETRY_STOP_THRESHOLD = 60 * 1000;
 let autoRefreshTimer = null;
 let retryTimer = null;
 let lastDataTimestamp = null;
-let retryCount = 0; // Track current retry count
-let isFetching = false; // Flag to prevent concurrent API calls
+let retryCount = 0;
+let isFetching = false;
 
-// Initialize location history manager
 const locationHistory = new LocationHistoryManager();
+// Make locationHistory available globally for metrics page
+if (typeof window !== 'undefined') {
+    window.locationHistory = locationHistory;
+}
 let historySlider = null;
 
 // Initialize the application
 async function init() {
+    console.log('init: Starting initialization...');
     initMap();
     initializeLegendToggle();
+    
+    console.log('init: Initializing location history...');
     await locationHistory.initializeHistory();
+    console.log('init: Location history initialized, count:', locationHistory.getLocations().length);
     
-    // Predictions are now fetched from the API, no local calculation needed
-    
-    // Show loading animation while setting up predictions
     showPredictionsLoading();
     
-    // Initialize history slider with callback to update map
+    console.log('init: Creating history slider...');
     historySlider = new HistorySlider(locationHistory, updateMapFromHistory);
     historySlider.initialize();
+    console.log('init: History slider initialized');
     
+    console.log('init: Waiting 100ms before fetching data...');
+    await new Promise(resolve => setTimeout(resolve, 100));
     
+    // Listen for map view being shown (for tab navigation)
+    window.addEventListener('mapViewShown', () => {
+        if (map) {
+            // Close any open popups before resizing to prevent text wrapping issues
+            map.closePopup();
+            
+            // Invalidate map size to fix rendering after being hidden
+            setTimeout(() => {
+                map.invalidateSize();
+                
+                // Reopen popup after resize if there's a marker
+                if (issMarker && issMarker.length > 0) {
+                    setTimeout(() => {
+                        const center = map.getCenter();
+                        const closestMarker = issMarker.reduce((prev, curr) => {
+                            const prevDist = Math.abs(prev.getLatLng().lng - center.lng);
+                            const currDist = Math.abs(curr.getLatLng().lng - center.lng);
+                            return currDist < prevDist ? curr : prev;
+                        });
+                        if (closestMarker && closestMarker.getPopup()) {
+                            closestMarker.openPopup();
+                        }
+                    }, 100);
+                }
+            }, 50);
+        }
+    });
+    
+    console.log('init: Fetching ISS data...');
     await fetchISSData();
+    console.log('init: Initialization complete');
     
-    // Start automatic refresh
     startAutoRefresh();
-    
-    // TLE data is handled server-side, no need to update client-side
 }
 
 // Initialize legend toggle functionality
 function initializeLegendToggle() {
     const legendPredicted = document.getElementById('legend-predicted');
-    const legendSgp4 = document.getElementById('legend-sgp4');
     
     if (legendPredicted) {
         legendPredicted.addEventListener('click', () => {
             pathVisibility.predicted = !pathVisibility.predicted;
             updateLegendVisualState();
-            // Redraw paths and markers
-            redrawPathsForWorldCopies();
-            // Also refresh markers from current slider position
-            refreshPredictionMarkers();
-        });
-    }
-    
-    if (legendSgp4) {
-        legendSgp4.addEventListener('click', () => {
-            pathVisibility.sgp4 = !pathVisibility.sgp4;
-            updateLegendVisualState();
-            // Redraw paths and markers
-            redrawPathsForWorldCopies();
-            // Also refresh markers from current slider position
+            if (pathVisibility.predicted) {
+                redrawPredictionPaths();
+            } else {
+                predictionPathPolylines.forEach(polyline => {
+                    if (polyline && map.hasLayer(polyline)) {
+                        map.removeLayer(polyline);
+                    }
+                });
+                predictionPathPolylines = [];
+            }
             refreshPredictionMarkers();
         });
     }
@@ -133,6 +153,9 @@ function refreshPredictionMarkers() {
     });
     predictionMarkers = [];
     
+    // Check visibility first
+    if (!pathVisibility.predicted) return;
+    
     // Get current location from slider
     const slider = document.getElementById('history-slider');
     if (!slider || slider.value === '') return;
@@ -141,9 +164,21 @@ function refreshPredictionMarkers() {
     const location = locationHistory.getLocationAt(currentIndex);
     if (!location) return;
     
-    // Get predictions for this location
-    const predictions = locationHistory.getPredictions();
-    if (!predictions || predictions.length === 0) return;
+    // Get predictions for this specific location (not all predictions)
+    let predictionsToShow = [];
+    
+    if (location.isPredictionGroup && location.predictions) {
+        // This is a prediction group - show only predictions for this source timestamp
+        predictionsToShow = location.predictions;
+    } else if (location.isPredicted) {
+        // Single prediction (backward compatibility)
+        predictionsToShow = [location];
+    } else {
+        // Historical location - no predictions to show
+        return;
+    }
+    
+    if (predictionsToShow.length === 0) return;
     
     // Create prediction icons
     const predictionDotIcon = L.divIcon({
@@ -153,23 +188,15 @@ function refreshPredictionMarkers() {
         iconAnchor: [4, 4]
     });
     
-    const sgp4DotIcon = L.divIcon({
-        className: 'sgp4-dot',
-        html: '<div style="width: 10px; height: 10px; border-radius: 50%; background-color: #4ECDC4; border: 2px solid white; box-shadow: 0 0 4px rgba(0,0,0,0.5);"></div>',
-        iconSize: [10, 10],
-        iconAnchor: [5, 5]
-    });
-    
     const bounds = map.getBounds();
     const west = bounds.getWest();
     const east = bounds.getEast();
     
-    predictions.forEach(pred => {
-        // Check visibility based on prediction method
-        const isSgp4 = pred.method === 'sgp4';
-        const shouldShow = isSgp4 ? pathVisibility.sgp4 : pathVisibility.predicted;
-        
-        if (!shouldShow) return; // Skip this marker if visibility is disabled
+    predictionsToShow.forEach(pred => {
+        // Skip SGP4 predictions
+        if (pred.method === 'sgp4') {
+            return;
+        }
         
         const predLat = parseFloat(pred.latitude);
         let predLon = parseFloat(pred.longitude);
@@ -178,21 +205,18 @@ function refreshPredictionMarkers() {
         while (predLon > 180) predLon -= 360;
         while (predLon < -180) predLon += 360;
         
-        const iconToUse = isSgp4 ? sgp4DotIcon : predictionDotIcon;
-        
         let baseLon = predLon;
         while (baseLon > west - 360) baseLon -= 360;
         
         for (let currLon = baseLon; currLon <= east + 720; currLon += 360) {
             const marker = L.marker([predLat, currLon], { 
-                icon: iconToUse,
+                icon: predictionDotIcon,
                 interactive: true
             }).addTo(map);
             
             const predTime = new Date(pred.timestamp);
             const minutesAhead = pred.minutes_ahead || '?';
-            const methodLabel = isSgp4 ? 'SGP4' : 'Orbital Mechanics';
-            const popupContent = `<b>Predicted Location (${methodLabel})</b><br>` +
+            const popupContent = `<b>Predicted Location (Orbital Mechanics)</b><br>` +
                 `Time: ${predTime.toLocaleString()}<br>` +
                 `Minutes ahead: ${minutesAhead}<br>` +
                 `Coordinates: ${predLat.toFixed(4)}, ${predLon.toFixed(4)}`;
@@ -203,24 +227,14 @@ function refreshPredictionMarkers() {
     });
 }
 
-// Update legend visual state based on visibility
 function updateLegendVisualState() {
     const legendPredicted = document.getElementById('legend-predicted');
-    const legendSgp4 = document.getElementById('legend-sgp4');
     
     if (legendPredicted) {
         if (pathVisibility.predicted) {
             legendPredicted.classList.remove('disabled');
         } else {
             legendPredicted.classList.add('disabled');
-        }
-    }
-    
-    if (legendSgp4) {
-        if (pathVisibility.sgp4) {
-            legendSgp4.classList.remove('disabled');
-        } else {
-            legendSgp4.classList.add('disabled');
         }
     }
 }
@@ -279,197 +293,23 @@ function initMap() {
         return div;
     };
     centerButton.addTo(map);
-    
-    // Redraw paths when map view changes (zoom/pan) to show paths on all visible world copies
-    map.on('moveend', redrawPathsForWorldCopies);
 }
 
-// Redraw paths for all visible world copies when map view changes
 function redrawPathsForWorldCopies() {
-    if (!map) return;
-    
-    // Remove existing paths
-    predictionPathPolylines.forEach(polyline => {
-        if (polyline && map.hasLayer(polyline)) {
-            map.removeLayer(polyline);
-        }
-    });
-    predictionPathPolylines = [];
-    
-    sgp4PathPolylines.forEach(polyline => {
-        if (polyline && map.hasLayer(polyline)) {
-            map.removeLayer(polyline);
-        }
-    });
-    sgp4PathPolylines = [];
-    
-    // Redraw prediction markers if we have predictions
-    const predictions = locationHistory.getPredictions();
-    if (predictions && predictions.length > 0) {
-        // Remove existing prediction markers
-        predictionMarkers.forEach(marker => {
-            if (marker && map.hasLayer(marker)) {
-                map.removeLayer(marker);
+    refreshPredictionMarkers();
+        redrawPredictionPaths();
             }
-        });
-        predictionMarkers = [];
-        
-        // Create prediction icons
-        const predictionDotIcon = L.divIcon({
-            className: 'prediction-dot',
-            html: '<div style="width: 8px; height: 8px; border-radius: 50%; background-color: #FF6B6B; border: 2px solid white; box-shadow: 0 0 4px rgba(0,0,0,0.5);"></div>',
-            iconSize: [8, 8],
-            iconAnchor: [4, 4]
-        });
-        
-        const sgp4DotIcon = L.divIcon({
-            className: 'sgp4-dot',
-            html: '<div style="width: 10px; height: 10px; border-radius: 50%; background-color: #4ECDC4; border: 2px solid white; box-shadow: 0 0 4px rgba(0,0,0,0.5);"></div>',
-            iconSize: [10, 10],
-            iconAnchor: [5, 5]
-        });
-        
-        const bounds = map.getBounds();
-        const west = bounds.getWest();
-        const east = bounds.getEast();
-        
-        predictions.forEach(pred => {
-            // Check visibility based on prediction method
-            const isSgp4 = pred.method === 'sgp4';
-            const shouldShow = isSgp4 ? pathVisibility.sgp4 : pathVisibility.predicted;
-            
-            if (!shouldShow) return; // Skip this marker if visibility is disabled
-            
-            const predLat = parseFloat(pred.latitude);
-            let predLon = parseFloat(pred.longitude);
-            
-            // Normalize longitude
-            while (predLon > 180) predLon -= 360;
-            while (predLon < -180) predLon += 360;
-            
-            const iconToUse = isSgp4 ? sgp4DotIcon : predictionDotIcon;
-            
-            let baseLon = predLon;
-            while (baseLon > west - 360) baseLon -= 360;
-            
-            for (let currLon = baseLon; currLon <= east + 720; currLon += 360) {
-                const marker = L.marker([predLat, currLon], { 
-                    icon: iconToUse,
-                    interactive: true
-                }).addTo(map);
-                
-                const predTime = new Date(pred.timestamp);
-                const minutesAhead = pred.minutes_ahead || '?';
-                const methodLabel = isSgp4 ? 'SGP4' : 'Orbital Mechanics';
-                const popupContent = `<b>Predicted Location (${methodLabel})</b><br>` +
-                    `Time: ${predTime.toLocaleString()}<br>` +
-                    `Minutes ahead: ${minutesAhead}<br>` +
-                    `Coordinates: ${predLat.toFixed(4)}, ${predLon.toFixed(4)}`;
-                
-                marker.bindPopup(popupContent);
-                predictionMarkers.push(marker);
-            }
-        });
-    }
-    
-    // Redraw prediction path if we have data and visibility is enabled
-    if (pathVisibility.predicted && currentPathData && currentPathData.pathPoints.length > 0) {
-        const bounds = map.getBounds();
-        const west = bounds.getWest();
-        const east = bounds.getEast();
-        const firstLon = currentPathData.pathPoints[0][1];
-        let baseLon = firstLon;
-        while (baseLon > west - 360) baseLon -= 360;
-        
-        for (let offsetLon = baseLon; offsetLon <= east + 720; offsetLon += 360) {
-            const offset = offsetLon - firstLon;
-            const offsetPathPoints = currentPathData.pathPoints.map(point => [point[0], point[1] + offset]);
-            
-            const polyline = L.polyline(offsetPathPoints, {
-                color: '#FF6B6B',
-                weight: 3,
-                opacity: 0.8,
-                dashArray: '5, 5'
-            }).addTo(map);
-            
-            polyline.bindPopup('Predicted Path (Polynomial)');
-            predictionPathPolylines.push(polyline);
-        }
-    }
-    
-    // Redraw SGP4 paths if we have data and visibility is enabled (past and future separately)
-    if (pathVisibility.sgp4 && currentSgp4PathData) {
-        const bounds = map.getBounds();
-        const west = bounds.getWest();
-        const east = bounds.getEast();
-        
-        // Draw past path (red/orange)
-        if (currentSgp4PathData.pastPoints && currentSgp4PathData.pastPoints.length > 0) {
-            const firstLon = currentSgp4PathData.pastPoints[0][1];
-            let baseLon = firstLon;
-            while (baseLon > west - 360) baseLon -= 360;
-            
-            for (let offsetLon = baseLon; offsetLon <= east + 720; offsetLon += 360) {
-                const offset = offsetLon - firstLon;
-                const offsetPathPoints = currentSgp4PathData.pastPoints.map(point => [point[0], point[1] + offset]);
-                
-                const polyline = L.polyline(offsetPathPoints, {
-                    color: '#FF6B6B', // Red/orange for past
-                    weight: 5,
-                    opacity: 1.0,
-                    fillOpacity: 0,
-                    dashArray: '15, 10',
-                    lineCap: 'round',
-                    lineJoin: 'round'
-                }).addTo(map);
-                
-                polyline.bindPopup('True Path (SGP4/TLE) - Past');
-                sgp4PathPolylines.push(polyline);
-            }
-        }
-        
-        // Draw future path (teal/cyan)
-        if (currentSgp4PathData.futurePoints && currentSgp4PathData.futurePoints.length > 0) {
-            const firstLon = currentSgp4PathData.futurePoints[0][1];
-            let baseLon = firstLon;
-            while (baseLon > west - 360) baseLon -= 360;
-            
-            for (let offsetLon = baseLon; offsetLon <= east + 720; offsetLon += 360) {
-                const offset = offsetLon - firstLon;
-                const offsetPathPoints = currentSgp4PathData.futurePoints.map(point => [point[0], point[1] + offset]);
-                
-                const polyline = L.polyline(offsetPathPoints, {
-                    color: '#4ECDC4', // Teal/cyan for future
-                    weight: 5,
-                    opacity: 1.0,
-                    fillOpacity: 0,
-                    dashArray: '15, 10',
-                    lineCap: 'round',
-                    lineJoin: 'round'
-                }).addTo(map);
-                
-                polyline.bindPopup('True Path (SGP4/TLE) - Future');
-                sgp4PathPolylines.push(polyline);
-            }
-        }
-        
-        sgp4PathPolylines.forEach(polyline => polyline.bringToFront());
-    }
-}
 
 
-// Format coordinates to be more readable
 function formatCoordinates(lat, lon) {
     const latDir = lat >= 0 ? 'N' : 'S';
     const lonDir = lon >= 0 ? 'E' : 'W';
     return `${Math.abs(lat).toFixed(4)}° ${latDir}, ${Math.abs(lon).toFixed(4)}° ${lonDir}`;
 }
 
-// Format timestamp to local time
 function formatTimestamp(timestamp) {
     const date = new Date(timestamp);
     
-    // Get local time with date and timezone name
     const localTimeStr = date.toLocaleString('en-US', {
         year: 'numeric',
         month: 'numeric',
@@ -481,7 +321,6 @@ function formatTimestamp(timestamp) {
         timeZoneName: 'short'
     });
 
-    // Get UTC date and time
     const utcStr = date.toLocaleString('en-US', {
         year: 'numeric',
         month: 'numeric',
@@ -496,9 +335,7 @@ function formatTimestamp(timestamp) {
     return `${localTimeStr}\n\n${utcStr}`;
 }
 
-// Start automatic refresh timer
 function startAutoRefresh() {
-    // Clear any existing timers
     if (autoRefreshTimer) {
         clearTimeout(autoRefreshTimer);
     }
@@ -506,15 +343,12 @@ function startAutoRefresh() {
         clearTimeout(retryTimer);
     }
     
-    // Reset retry count when starting a new refresh cycle
     retryCount = 0;
     
-    // Calculate time until next 5-minute mark (e.g., 2:20, 2:25, etc.)
     const now = new Date();
     const nextUpdate = getNextScheduledUpdate(now);
     const timeUntilUpdate = nextUpdate.getTime() - now.getTime();
     
-    // Set up the main auto-refresh timer
     autoRefreshTimer = setTimeout(() => {
         fetchISSDataWithRetry();
     }, timeUntilUpdate);
@@ -522,36 +356,25 @@ function startAutoRefresh() {
     console.log('Auto-refresh started - next update at:', nextUpdate.toLocaleTimeString());
 }
 
-// Calculate the next scheduled 5-minute update time
 function getNextScheduledUpdate(currentTime) {
     const nextUpdate = new Date(currentTime);
-    
-    // Get current minutes
     const currentMinutes = nextUpdate.getMinutes();
-    
-    // Calculate the current 5-minute mark (round down to nearest 5)
     const current5MinMark = Math.floor(currentMinutes / 5) * 5;
-    
-    // Next 5-minute mark is always current mark + 5 minutes
-    // This ensures we always go to the NEXT interval, not the current one
     let nextMinuteMark = current5MinMark + 5;
     
     if (nextMinuteMark >= 60) {
-        // If we're past 55 minutes, go to next hour
         nextUpdate.setHours(nextUpdate.getHours() + 1);
         nextUpdate.setMinutes(nextMinuteMark - 60);
     } else {
         nextUpdate.setMinutes(nextMinuteMark);
     }
     
-    // Reset seconds and milliseconds to 0
     nextUpdate.setSeconds(0);
     nextUpdate.setMilliseconds(0);
     
     return nextUpdate;
 }
 
-// Get time until next scheduled update in milliseconds
 function getTimeUntilNextUpdate() {
     const now = new Date();
     const nextUpdate = getNextScheduledUpdate(now);
@@ -572,10 +395,20 @@ async function fetchISSDataWithRetry() {
         const response = await fetch(`${config.API_URL}?api_key=${config.API_KEY}`);
         
         if (!response.ok) {
-            throw new Error(`API returned ${response.status}`);
+            const errorText = await response.text();
+            console.error('API Error in retry:', errorText);
+            throw new Error(`API returned ${response.status}: ${errorText}`);
+        }
+        
+        const contentType = response.headers.get('content-type');
+        if (!contentType || !contentType.includes('application/json')) {
+            const text = await response.text();
+            console.error('Unexpected content type in retry. Response text:', text.substring(0, 500));
+            throw new Error(`Expected JSON but got ${contentType}`);
         }
         
         const data = await response.json();
+        console.log('Received data in retry:', data);
         
         // Check if we have new data
         if (lastDataTimestamp && data.timestamp === lastDataTimestamp) {
@@ -796,9 +629,64 @@ function updateMapFromHistory(location) {
     // Hide "no data available" message if it's showing
     hideNoDataMessage();
     
-    // Update map marker
-    const lat = parseFloat(location.latitude);
-    const lon = parseFloat(location.longitude);
+    // Calculate marker position - use centroid for prediction groups
+    let lat, lon;
+    
+    if (location.isPredictionGroup && location.predictions && location.predictions.length > 0) {
+        // Calculate centroid of all predictions for this source timestamp
+        const predictions = location.predictions.filter(p => p.method !== 'sgp4'); // Exclude SGP4
+        if (predictions.length > 0) {
+            let sumLat = 0;
+            const lonValues = [];
+            
+            predictions.forEach(pred => {
+                const predLat = parseFloat(pred.latitude);
+                const predLon = parseFloat(pred.longitude);
+                if (!isNaN(predLat) && !isNaN(predLon)) {
+                    sumLat += predLat;
+                    let normalizedLon = predLon;
+                    while (normalizedLon > 180) normalizedLon -= 360;
+                    while (normalizedLon < -180) normalizedLon += 360;
+                    lonValues.push(normalizedLon);
+                }
+            });
+            
+            if (lonValues.length > 0) {
+                // Calculate centroid longitude handling wrapping
+                const refLon = lonValues[0];
+                let sumOffset = 0;
+                
+                lonValues.forEach(lonVal => {
+                    let offset = lonVal - refLon;
+                    if (offset > 180) offset -= 360;
+                    if (offset < -180) offset += 360;
+                    sumOffset += offset;
+                });
+                
+                const avgOffset = sumOffset / lonValues.length;
+                let centroidLon = refLon + avgOffset;
+                
+                while (centroidLon > 180) centroidLon -= 360;
+                while (centroidLon < -180) centroidLon += 360;
+                
+                lat = sumLat / predictions.length;
+                lon = centroidLon;
+                console.log('updateMapFromHistory - Using centroid for prediction group:', { lat, lon, predictionCount: predictions.length });
+            } else {
+                // Fallback to first prediction if centroid calculation fails
+                lat = parseFloat(location.latitude);
+                lon = parseFloat(location.longitude);
+            }
+        } else {
+            // Fallback to location coordinates
+            lat = parseFloat(location.latitude);
+            lon = parseFloat(location.longitude);
+        }
+    } else {
+        // Use location coordinates directly for historical data
+        lat = parseFloat(location.latitude);
+        lon = parseFloat(location.longitude);
+    }
     
     // Validate coordinates are valid numbers
     if (isNaN(lat) || isNaN(lon)) {
@@ -835,11 +723,19 @@ function updateMapFromHistory(location) {
     });
     predictionMarkers = [];
     
-    // Display all prediction points on the map (always show all predictions when available)
-    const predictions = locationHistory.getPredictions();
-    if (predictions && predictions.length > 0) {
-        console.log('Displaying', predictions.length, 'prediction points on map');
-        
+    // Display predictions for the selected source timestamp
+    let predictionsToShow = [];
+    
+    if (location.isPredictionGroup && location.predictions) {
+        // This is a prediction group - show all predictions for this source timestamp
+        predictionsToShow = location.predictions;
+        console.log('Displaying', predictionsToShow.length, 'predictions for source timestamp:', location.timestamp);
+    } else if (location.isPredicted) {
+        // Single prediction (backward compatibility)
+        predictionsToShow = [location];
+    }
+    
+    if (predictionsToShow.length > 0 && pathVisibility.predicted) {
         // Create prediction icon (smaller dot for orbital mechanics)
         const predictionDotIcon = L.divIcon({
             className: 'prediction-dot',
@@ -848,24 +744,15 @@ function updateMapFromHistory(location) {
             iconAnchor: [4, 4]
         });
         
-        // Create SGP4 prediction icon (different color, slightly larger)
-        const sgp4DotIcon = L.divIcon({
-            className: 'sgp4-dot',
-            html: '<div style="width: 10px; height: 10px; border-radius: 50%; background-color: #4ECDC4; border: 2px solid white; box-shadow: 0 0 4px rgba(0,0,0,0.5);"></div>',
-            iconSize: [10, 10],
-            iconAnchor: [5, 5]
-        });
-        
         const bounds = map.getBounds();
         const west = bounds.getWest();
         const east = bounds.getEast();
         
-        predictions.forEach(pred => {
-            // Check visibility based on prediction method
-            const isSgp4 = pred.method === 'sgp4';
-            const shouldShow = isSgp4 ? pathVisibility.sgp4 : pathVisibility.predicted;
-            
-            if (!shouldShow) return; // Skip this marker if visibility is disabled
+        predictionsToShow.forEach(pred => {
+            // Skip SGP4 predictions
+            if (pred.method === 'sgp4') {
+                return;
+            }
             
             const predLat = parseFloat(pred.latitude);
             let predLon = parseFloat(pred.longitude);
@@ -874,9 +761,6 @@ function updateMapFromHistory(location) {
             while (predLon > 180) predLon -= 360;
             while (predLon < -180) predLon += 360;
             
-            // Determine icon based on method
-            const iconToUse = isSgp4 ? sgp4DotIcon : predictionDotIcon;
-            
             // Calculate base longitude
             let baseLon = predLon;
             while (baseLon > west - 360) baseLon -= 360;
@@ -884,15 +768,14 @@ function updateMapFromHistory(location) {
             // Add markers for all visible longitudes
             for (let currLon = baseLon; currLon <= east + 720; currLon += 360) {
                 const marker = L.marker([predLat, currLon], { 
-                    icon: iconToUse,
+                    icon: predictionDotIcon,
                     interactive: true
                 }).addTo(map);
                 
                 // Create popup content
                 const predTime = new Date(pred.timestamp);
                 const minutesAhead = pred.minutes_ahead || '?';
-                const methodLabel = isSgp4 ? 'SGP4' : 'Orbital Mechanics';
-                const popupContent = `<b>Predicted Location (${methodLabel})</b><br>` +
+                const popupContent = `<b>Predicted Location (Orbital Mechanics)</b><br>` +
                     `Time: ${predTime.toLocaleString()}<br>` +
                     `Minutes ahead: ${minutesAhead}<br>` +
                     `Coordinates: ${predLat.toFixed(4)}, ${predLon.toFixed(4)}`;
@@ -1026,11 +909,26 @@ function updateMapFromHistory(location) {
 
 // Update the UI with ISS data
 function updateUI(data) {
+    console.log('updateUI: Called with data:', data);
+    
+    if (!data || !data.latitude || !data.longitude) {
+        console.error('updateUI: Invalid data - missing latitude/longitude', data);
+        return null;
+    }
+    
     const coordinates = document.getElementById('coordinates');
     const time = document.getElementById('time');
     const fact = document.getElementById('fact');
     
-    if (data.latitude && data.longitude) {
+    if (!coordinates || !time || !fact) {
+        console.error('updateUI: DOM elements not found');
+        return null;
+    }
+    
+    try {
+        console.log('updateUI: Adding location to history...');
+        console.log('updateUI: historySlider exists?', !!historySlider);
+        
         // Add the new location to history with smart slider positioning
         const addResult = locationHistory.addLocation({
             timestamp: data.timestamp,
@@ -1038,39 +936,39 @@ function updateUI(data) {
             longitude: data.longitude,
             location: data.location,
             fun_fact: data.fun_fact
-        }, () => historySlider.getCurrentSliderInfo());
+        }, () => {
+            if (!historySlider) {
+                console.warn('updateUI: historySlider not initialized yet, returning null');
+                return null;
+            }
+            return historySlider.getCurrentSliderInfo();
+        });
 
-        // Set predictions from API data
-        if (data.predictions && data.predictions.orbital_mechanics) {
+        if (data.predictions) {
+            console.log('updateUI: Setting predictions from API...');
             locationHistory.setPredictionsFromAPI(data.predictions);
             const predictions = locationHistory.predictions;
-            
-            console.log('Predictions loaded from API:', predictions.length);
-            if (predictions.length > 0) {
-                console.log('First prediction:', predictions[0]);
-                console.log('Last prediction:', predictions[predictions.length - 1]);
-            }
-
-            // Store fixed predictions for accuracy table (only store once on initial load, never regenerate)
-            // These predictions stay fixed so we can compare actual data against them over time
-            if (!accuracyTableInitialized && predictions.length > 0) {
-                // Store the first 12 predictions (next hour) for the accuracy table
-                accuracyTablePredictions = predictions.slice(0, 12).map(p => ({ ...p })); // Deep copy
-                accuracyTableInitialized = true; // Mark as initialized so it never gets regenerated
-                console.log('Stored', accuracyTablePredictions.length, 'fixed predictions for accuracy table');
-                console.log('First prediction time:', accuracyTablePredictions[0].timestamp);
-                console.log('Last prediction time:', accuracyTablePredictions[accuracyTablePredictions.length - 1].timestamp);
-                console.log('Accuracy table predictions are now FIXED and will not be regenerated');
-            }
+            console.log('updateUI: Predictions set, count:', predictions.length);
         } else {
-            console.log('No predictions available in API response');
-            locationHistory.predictions = [];
+            console.log('updateUI: No predictions in API response');
+            locationHistory.setPredictionsFromAPI(null);
+        }
+        
+        // Store historical predictions for metrics page
+        // Set to null initially to indicate API response received (even if no predictions)
+        if (typeof window !== 'undefined') {
+            window.historicalPredictions = data.historical_predictions || null;
+            console.log('updateUI: Storing historical predictions for metrics:', data.historical_predictions ? 'present' : 'null');
+            
+            // Trigger metrics update if metrics page is already initialized
+            if (typeof window !== 'undefined' && window.updateMetricsGraphs) {
+                window.updateMetricsGraphs();
+            }
         }
 
-        // Update slider range after predictions are generated
+        if (historySlider) {
         historySlider.updateSliderRange();
         
-        // Verify slider can access predictions
         const allLocations = locationHistory.getAllLocations();
         const historyCount = locationHistory.getLocations().length;
         if (allLocations.length > historyCount) {
@@ -1078,28 +976,22 @@ function updateUI(data) {
             console.log('Verification - First prediction accessible:', firstPrediction ? firstPrediction.timestamp : 'null');
         }
         
-        // Display prediction accuracy table (uses fixed predictions)
-        displayPredictionAccuracyTable();
+            if (!historySlider.isPositioned()) {
+                const filledHistoryCount = locationHistory.getFilledHistoryCount();
+                historySlider.setSliderValue(filledHistoryCount - 1, true);
+            }
+        } else {
+            console.warn('updateUI: historySlider not initialized, skipping slider updates');
+        }
         
-        // Historical validation disabled - predictions now come from API
-        // displayHistoricalValidation(); // Disabled - would need server-side historical predictions
         
-        // Draw prediction paths using API data
         const currentLocation = {
             timestamp: data.timestamp,
             latitude: data.latitude,
             longitude: data.longitude
         };
-        // Store the current location
         currentISSLocation = currentLocation;
-        // Use predictions from API if available
         drawPredictionPathsFromAPI(currentLocation, data.predictions);
-        
-        // Set slider to current time position (middle of slider) if not already positioned
-        if (!historySlider.isPositioned()) {
-            const filledHistoryCount = locationHistory.getFilledHistoryCount();
-            historySlider.setSliderValue(filledHistoryCount - 1, true);
-        }
         
         // Hide loading animation now that predictions are ready
         hidePredictionsLoading();
@@ -1109,11 +1001,9 @@ function updateUI(data) {
         time.textContent = formatTimestamp(data.timestamp);
         fact.textContent = data.fun_fact || 'No fun fact available for this location.';
 
-        // Update map
         const lat = parseFloat(data.latitude);
         const lon = parseFloat(data.longitude);
         
-        // Create a custom icon for the ISS
         const issIcon = L.icon({
             iconUrl: './assets/iss-icon.svg',
             iconSize: [32, 32],
@@ -1121,12 +1011,10 @@ function updateUI(data) {
             popupAnchor: [0, -16]
         });
         
-        // Remove existing markers if they exist
         if (issMarker) {
             if (Array.isArray(issMarker)) {
                 issMarker.forEach(marker => {
                     map.removeLayer(marker);
-                    // Remove uncertainty circles if they exist
                     if (marker.uncertaintyCircles) {
                         marker.uncertaintyCircles.forEach(circle => map.removeLayer(circle));
                     }
@@ -1140,21 +1028,17 @@ function updateUI(data) {
             }
         }
 
-        // Get map bounds
         const bounds = map.getBounds();
         const west = bounds.getWest();
         const east = bounds.getEast();
         const center = bounds.getCenter();
 
-        // Calculate base longitude that's west of the current view with extra buffer
         let baseLon = lon;
-        while (baseLon > west - 360) baseLon -= 360;  // Add one more world width to the west
+        while (baseLon > west - 360) baseLon -= 360;
 
-        // Create array to hold markers
         issMarker = [];
 
-        // Add markers for all visible longitudes with extra buffer
-        for (let currLon = baseLon; currLon <= east + 720; currLon += 360) {  // Add two world widths to the east
+        for (let currLon = baseLon; currLon <= east + 720; currLon += 360) {
             const marker = L.marker([lat, currLon], { icon: issIcon }).addTo(map);
             if (data.location) {
                 const flag = getCountryFlag(data.location, data.country_code);
@@ -1171,7 +1055,6 @@ function updateUI(data) {
         
         map.panTo([lat, targetLng]);
         
-        // Open popup on the marker closest to center
         if (data.location && issMarker.length > 0) {
             const closestMarker = issMarker.reduce((prev, curr) => {
                 const prevDist = Math.abs(prev.getLatLng().lng - center.lng);
@@ -1181,11 +1064,11 @@ function updateUI(data) {
             closestMarker.openPopup();
         }
         
-        // Return the addResult for smart slider positioning
+        console.log('updateUI: Completed successfully, returning addResult');
         return addResult;
-    } else {
-        console.error('Unexpected data structure:', data);
-        showError('Received invalid data structure from API');
+    } catch (error) {
+        console.error('updateUI: Error processing data:', error);
+        console.error('updateUI: Error stack:', error.stack);
         return null;
     }
 }
@@ -1230,41 +1113,41 @@ function hideNoDataMessage() {
 // Fetch ISS data (initial load)
 async function fetchISSData() {
     try {
-        console.log('Fetching initial data from:', config.API_URL);
+        console.log('fetchISSData: Starting fetch...');
         const response = await fetch(`${config.API_URL}?api_key=${config.API_KEY}`);
-        console.log('Response status:', response.status);
+        console.log('fetchISSData: Response received, status:', response.status);
         
         if (!response.ok) {
-            const errorText = await response.text();
-            console.error('API Error:', errorText);
-            throw new Error(`API returned ${response.status}: ${errorText}`);
+            throw new Error(`API returned ${response.status}`);
         }
         
         const data = await response.json();
-        console.log('Received initial data:', data);
+        console.log('fetchISSData: Data parsed, calling updateUI...');
+        console.log('fetchISSData: Data has predictions?', !!data.predictions);
         
-        // Mark that current location has been loaded
         isCurrentLocationLoaded = true;
-        
-        // Store the timestamp for comparison
         lastDataTimestamp = data.timestamp;
         
-        // Update actual locations map for accuracy comparison
         updateActualLocations(data);
-        
+        console.log('fetchISSData: About to call updateUI with data:', data);
+        console.log('fetchISSData: historySlider exists?', !!historySlider);
         const addResult = updateUI(data);
+        console.log('fetchISSData: updateUI returned:', addResult);
         
-        // Update slider range and reset to current time position (middle of slider)
+        if (historySlider) {
         historySlider.updateSliderRange();
         const filledHistoryCount = locationHistory.getFilledHistoryCount();
-        console.log('Resetting slider - Filled history count:', filledHistoryCount, 'Current time position:', filledHistoryCount - 1);
-        historySlider.setSliderValue(filledHistoryCount - 1, true); // Skip map update since map already shows current data
+            historySlider.setSliderValue(filledHistoryCount - 1, true);
+        } else {
+            console.warn('fetchISSData: historySlider not initialized, skipping slider updates');
+        }
         
-        // Hide any previous error messages
         document.getElementById('error').style.display = 'none';
+        console.log('fetchISSData: Completed successfully');
         
     } catch (error) {
-        console.error('Error details:', error);
+        console.error('fetchISSData: Error caught:', error);
+        console.error('fetchISSData: Error stack:', error.stack);
         showError(
             'Failed to fetch initial ISS data. Auto-refresh will continue.',
             `Error: ${error.message}`
@@ -1333,174 +1216,8 @@ function degreesToMilesLon(degrees, latitude) {
 // Store actual locations for comparison
 const actualLocations = new Map(); // key: timestamp (rounded to 5 min), value: location data
 
-// Store fixed predictions for accuracy table (don't regenerate these)
-// These are set once on initial load and never change
-let accuracyTablePredictions = [];
-let accuracyTableInitialized = false;
 
 // Display predictions for the next hour in the table
-function displayPredictionAccuracyTable() {
-    // Always use fixed predictions for accuracy table (set on initial load, never regenerated)
-    const predictions = accuracyTablePredictions;
-    if (!predictions || predictions.length === 0) {
-        // Show placeholder if predictions haven't been initialized yet
-        const tableBody = document.getElementById('prediction-table-body');
-        if (tableBody) {
-            tableBody.innerHTML = '<tr><td colspan="6" class="no-predictions">Predictions will appear here once calculated...</td></tr>';
-        }
-        return;
-    }
-    
-    // Use all stored fixed predictions (should be exactly 12 for the next hour)
-    const nextHourPredictions = predictions;
-    
-    const tableBody = document.getElementById('prediction-table-body');
-    if (!tableBody) return;
-    
-    // Clear existing rows
-    tableBody.innerHTML = '';
-    
-        if (nextHourPredictions.length === 0) {
-        tableBody.innerHTML = '<tr><td colspan="6" class="no-predictions">No predictions available yet...</td></tr>';
-        return;
-    }
-    
-    // Create rows for each prediction
-    nextHourPredictions.forEach((prediction) => {
-        const row = document.createElement('tr');
-        
-        // Format time
-        const predTime = new Date(prediction.timestamp);
-        const timeStr = predTime.toLocaleTimeString('en-US', {
-            hour: 'numeric',
-            minute: '2-digit',
-            hour12: true
-        });
-        
-        // Get prediction key for matching (rounds to 5-minute intervals)
-        const predictionKey = getPredictionKey(predTime);
-        
-        // Check if we have actual data for this timestamp
-        // Try exact match first, then check within 2.5 minutes tolerance
-        let actualLocation = actualLocations.get(predictionKey);
-        
-        // If no exact match, try to find closest match within 2.5 minutes
-        if (!actualLocation) {
-            const predTimeMs = predTime.getTime();
-            let closestMatch = null;
-            let closestDiff = Infinity;
-            
-            for (const [key, value] of actualLocations.entries()) {
-                const actualTimeMs = new Date(value.timestamp).getTime();
-                const diff = Math.abs(predTimeMs - actualTimeMs);
-                // Match if within 2.5 minutes (half of 5-minute interval)
-                if (diff <= 2.5 * 60 * 1000 && diff < closestDiff) {
-                    closestDiff = diff;
-                    closestMatch = value;
-                }
-            }
-            
-            if (closestMatch) {
-                actualLocation = closestMatch;
-            }
-        }
-        
-        // Time column
-        const timeCell = document.createElement('td');
-        timeCell.className = 'prediction-time';
-        timeCell.textContent = timeStr;
-        row.appendChild(timeCell);
-        
-        // Predicted location column
-        const predLocCell = document.createElement('td');
-        predLocCell.className = 'prediction-location';
-        predLocCell.textContent = formatCoordinates(
-            parseFloat(prediction.latitude),
-            parseFloat(prediction.longitude)
-        );
-        row.appendChild(predLocCell);
-        
-        // Actual location column
-        const actualLocCell = document.createElement('td');
-        if (actualLocation) {
-            actualLocCell.className = 'actual-location';
-            actualLocCell.textContent = formatCoordinates(
-                parseFloat(actualLocation.latitude),
-                parseFloat(actualLocation.longitude)
-            );
-        } else {
-            actualLocCell.className = 'prediction-location-pending';
-            actualLocCell.textContent = 'Pending...';
-        }
-        row.appendChild(actualLocCell);
-        
-        // Distance column
-        const distanceCell = document.createElement('td');
-        if (actualLocation) {
-            const distanceKm = calculateDistance(
-                parseFloat(prediction.latitude),
-                parseFloat(prediction.longitude),
-                parseFloat(actualLocation.latitude),
-                parseFloat(actualLocation.longitude)
-            );
-            const distanceMiles = kmToMiles(distanceKm);
-            distanceCell.className = `distance-value ${getDistanceClass(distanceMiles)}`;
-            distanceCell.textContent = `${distanceMiles.toFixed(1)} mi`;
-            
-            // Record prediction accuracy for improving confidence calculations (still in km for internal use)
-            // Prediction accuracy tracking removed - predictions now come from API
-        } else {
-            distanceCell.className = 'prediction-location-pending';
-            distanceCell.textContent = '-';
-        }
-        row.appendChild(distanceCell);
-        
-        // Lat/Lon Error column (in miles)
-        const errorCell = document.createElement('td');
-        if (actualLocation) {
-            const predLat = parseFloat(prediction.latitude);
-            const predLon = parseFloat(prediction.longitude);
-            const actualLat = parseFloat(actualLocation.latitude);
-            const actualLon = parseFloat(actualLocation.longitude);
-            
-            const latErrorDeg = predLat - actualLat;
-            let lonErrorDeg = predLon - actualLon;
-            
-            // Handle longitude wrapping (find shortest path)
-            if (lonErrorDeg > 180) lonErrorDeg -= 360;
-            if (lonErrorDeg < -180) lonErrorDeg += 360;
-            
-            // Convert to miles
-            const latErrorMiles = degreesToMilesLat(latErrorDeg);
-            const lonErrorMiles = degreesToMilesLon(lonErrorDeg, predLat);
-            
-            // Format with appropriate signs
-            const latSign = latErrorMiles >= 0 ? '+' : '';
-            const lonSign = lonErrorMiles >= 0 ? '+' : '';
-            
-            errorCell.className = 'lat-lon-error';
-            errorCell.textContent = `${latSign}${latErrorMiles.toFixed(1)} mi, ${lonSign}${lonErrorMiles.toFixed(1)} mi`;
-        } else {
-            errorCell.className = 'prediction-location-pending';
-            errorCell.textContent = '-';
-        }
-        row.appendChild(errorCell);
-                // Minutes Ahead column
-        const minutesAheadCell = document.createElement('td');
-        minutesAheadCell.className = 'minutes-ahead';
-        if (prediction.minutesAhead !== undefined) {
-            minutesAheadCell.textContent = `${prediction.minutesAhead.toFixed(0)} min`;
-        } else {
-            // Calculate from timestamp if not available
-            const baseTime = accuracyTablePredictions.length > 0 ? new Date(accuracyTablePredictions[0].timestamp) : new Date();
-            const minutesDiff = (predTime - baseTime) / (1000 * 60);
-            minutesAheadCell.textContent = `${minutesDiff.toFixed(0)} min`;
-        }
-        row.appendChild(minutesAheadCell);
-        
-        tableBody.appendChild(row);
-    });
-}
 
 // Round timestamp to nearest 5 minutes
 function roundToNearest5Minutes(date) {
@@ -1549,258 +1266,9 @@ function updateActualLocations(locationData) {
         }
     }
     
-    // Refresh both tables
-    displayPredictionAccuracyTable();
-    displayHistoricalValidation();
 }
 
-// Store historical predictions for validation
-let historicalValidationPredictions = [];
 
-// Display historical validation table (predictions from 1 hour ago)
-function displayHistoricalValidation() {
-    const locations = locationHistory.getLocations();
-    if (locations.length < 12) {
-        // Need at least 1 hour of data (12 data points at 5-min intervals)
-        const tableBody = document.getElementById('historical-table-body');
-        if (tableBody) {
-            tableBody.innerHTML = '<tr><td colspan="7" class="no-predictions">Need at least 1 hour of data for historical validation...</td></tr>';
-        }
-        return;
-    }
-    
-    // Get location from 1 hour ago (12 data points back, since data comes every 5 minutes)
-    const oneHourAgoIndex = 11; // 12th item (0-indexed: 0-11 = 12 items = 1 hour)
-    if (locations.length <= oneHourAgoIndex) {
-        return;
-    }
-    
-    const oneHourAgoLocation = locations[oneHourAgoIndex];
-    const oneHourAgoTime = new Date(oneHourAgoLocation.timestamp);
-    const now = new Date();
-    const hoursDiff = (now - oneHourAgoTime) / (1000 * 60 * 60);
-    
-    // Only generate historical predictions if we have data from approximately 1 hour ago
-    // Be more lenient - allow data from 0.5 to 2 hours ago
-    if (hoursDiff < 0.5 || hoursDiff > 2.0) {
-        // Data is not close enough to 1 hour ago
-        const tableBody = document.getElementById('historical-table-body');
-        if (tableBody) {
-            tableBody.innerHTML = `<tr><td colspan="7" class="no-predictions">Waiting for data from ~1 hour ago (current: ${hoursDiff.toFixed(2)} hours ago)...</td></tr>`;
-        }
-        return;
-    }
-    
-    // Generate predictions from 1 hour ago
-    // Regenerate if we don't have predictions or if the base time has changed significantly
-    const shouldRegenerate = historicalValidationPredictions.length === 0 || 
-        (historicalValidationPredictions.length > 0 && 
-         Math.abs(new Date(historicalValidationPredictions[0].timestamp).getTime() - 
-                  (oneHourAgoTime.getTime() + 5 * 60 * 1000)) > 10 * 60 * 1000); // More than 10 min difference
-    
-    if (shouldRegenerate) {
-        // Get recent history from that point in time
-        // locations are sorted newest first (index 0 = most recent), so:
-        // - locations[oneHourAgoIndex] = 1 hour ago (this is our "current" point for predictions)
-        // - locations[oneHourAgoIndex + 1] = 1 hour 5 min ago (older, BEFORE the 1-hour-ago point)
-        // - locations[oneHourAgoIndex + 2] = 1 hour 10 min ago (older)
-        // - locations[oneHourAgoIndex + 3] = 1 hour 15 min ago (older)
-        // 
-        // IMPORTANT: We must ONLY use data that was available at the 1-hour-ago time.
-        // This means we use locations[oneHourAgoIndex] as current, and locations[oneHourAgoIndex + 1, +2, +3] as history.
-        // We MUST NOT use locations[0] through locations[oneHourAgoIndex - 1] as those are AFTER the 1-hour-ago point.
-        
-        // Verify we have enough data points
-        const minRequiredIndex = oneHourAgoIndex + 3; // Need at least 3 points before
-        if (locations.length <= minRequiredIndex) {
-            console.log('Not enough historical data for validation');
-            return;
-        }
-        
-        // Get history points that were available at the 1-hour-ago time
-        // These are points BEFORE (older than) the 1-hour-ago point
-        // Use same number as current predictions (3 points) for consistency
-        const recentHistoryAtThatTime = [
-            locations[oneHourAgoIndex],      // Current point (1 hour ago) - most recent available at that time
-            locations[oneHourAgoIndex + 1],  // 5 min before (1h 5m ago)
-            locations[oneHourAgoIndex + 2]   // 10 min before (1h 10m ago)
-        ].filter(loc => loc !== undefined && loc !== null); // Filter out invalid entries
-        
-        if (recentHistoryAtThatTime.length < 2) {
-            console.log('Not enough history points for velocity estimation');
-            return;
-        }
-        
-        // Verify timestamps are in correct order (newest first, which means decreasing timestamps)
-        for (let i = 0; i < recentHistoryAtThatTime.length - 1; i++) {
-            const time1 = new Date(recentHistoryAtThatTime[i].timestamp).getTime();
-            const time2 = new Date(recentHistoryAtThatTime[i + 1].timestamp).getTime();
-            if (time1 < time2) {
-                console.error('ERROR: History points are not in correct order! Point', i, 'is older than point', i + 1);
-                return;
-            }
-        }
-        
-        console.log('Historical validation - Using location from:', oneHourAgoTime.toISOString());
-        console.log('Historical validation - Base location:', oneHourAgoLocation.latitude, oneHourAgoLocation.longitude);
-        console.log('Historical validation - Recent history points:', recentHistoryAtThatTime.length);
-        if (recentHistoryAtThatTime.length > 1) {
-            const timeDiff = (new Date(recentHistoryAtThatTime[0].timestamp) - new Date(recentHistoryAtThatTime[1].timestamp)) / (1000 * 60);
-            console.log('Historical validation - Time diff between points:', timeDiff, 'minutes');
-            const latDiff = parseFloat(recentHistoryAtThatTime[0].latitude) - parseFloat(recentHistoryAtThatTime[1].latitude);
-            const lonDiff = parseFloat(recentHistoryAtThatTime[0].longitude) - parseFloat(recentHistoryAtThatTime[1].longitude);
-            console.log('Historical validation - Lat/Lon diff:', latDiff, lonDiff);
-        }
-        
-        // Historical validation disabled - predictions now come from API
-        // Historical predictions would need to be fetched from server for past timestamps
-        historicalValidationPredictions = [];
-        console.log('Historical validation disabled - predictions now come from API');
-    }
-    
-    const tableBody = document.getElementById('historical-table-body');
-    if (!tableBody) return;
-    
-    // Clear existing rows
-    tableBody.innerHTML = '';
-    
-    // Show message that historical validation is disabled
-    tableBody.innerHTML = '<tr><td colspan="6" class="no-predictions">Historical validation disabled - predictions now come from API</td></tr>';
-    return;
-    
-    // Create rows for each time interval
-    historicalValidationPredictions.forEach((predictionData) => {
-        const minutesAhead = predictionData.minutesAhead;
-        
-        // Get the single prediction (polynomial equations don't use correction factors)
-        const predictionKeys = Object.keys(predictionData.predictions);
-        if (predictionKeys.length === 0) return;
-        
-        const prediction = predictionData.predictions[predictionKeys[0]];
-        
-        // Calculate target time
-        const targetTime = new Date(oneHourAgoTime.getTime() + minutesAhead * 60 * 1000);
-        const timeStr = targetTime.toLocaleTimeString('en-US', {
-            hour: 'numeric',
-            minute: '2-digit',
-            hour12: true
-        });
-        
-        // Find actual data for this timestamp
-        const targetTimeMs = targetTime.getTime();
-        let actualLocation = null;
-        let closestDiff = Infinity;
-        
-        // First, check the locations array (contains all historical data)
-        locations.forEach(loc => {
-            const actualTimeMs = new Date(loc.timestamp).getTime();
-            const diff = Math.abs(actualTimeMs - targetTimeMs);
-            // Match if within 2.5 minutes
-            if (diff <= 2.5 * 60 * 1000 && diff < closestDiff) {
-                closestDiff = diff;
-                actualLocation = loc;
-            }
-        });
-        
-        // Also check actualLocations map
-        for (const [key, value] of actualLocations.entries()) {
-            const actualTimeMs = new Date(value.timestamp).getTime();
-            const diff = Math.abs(actualTimeMs - targetTimeMs);
-            if (diff <= 2.5 * 60 * 1000 && diff < closestDiff) {
-                closestDiff = diff;
-                actualLocation = value;
-            }
-        }
-        
-        const row = document.createElement('tr');
-        
-        // Time column
-        const timeCell = document.createElement('td');
-        timeCell.className = 'prediction-time';
-        timeCell.textContent = timeStr;
-        row.appendChild(timeCell);
-        
-        // Predicted location column
-        const predLocCell = document.createElement('td');
-        predLocCell.className = 'prediction-location';
-        predLocCell.textContent = formatCoordinates(
-            prediction.latitude,
-            prediction.longitude
-        );
-        row.appendChild(predLocCell);
-        
-        // Actual location column
-        const actualLocCell = document.createElement('td');
-        if (actualLocation) {
-            actualLocCell.className = 'actual-location';
-            actualLocCell.textContent = formatCoordinates(
-                parseFloat(actualLocation.latitude),
-                parseFloat(actualLocation.longitude)
-            );
-        } else {
-            actualLocCell.className = 'prediction-location-pending';
-            actualLocCell.textContent = 'Pending...';
-        }
-        row.appendChild(actualLocCell);
-        
-        // Distance column
-        const distanceCell = document.createElement('td');
-        if (actualLocation) {
-            const distanceKm = calculateDistance(
-                prediction.latitude,
-                prediction.longitude,
-                parseFloat(actualLocation.latitude),
-                parseFloat(actualLocation.longitude)
-            );
-            const distanceMiles = kmToMiles(distanceKm);
-            distanceCell.className = `distance-value ${getDistanceClass(distanceMiles)}`;
-            distanceCell.textContent = `${distanceMiles.toFixed(1)} mi`;
-        } else {
-            distanceCell.className = 'prediction-location-pending';
-            distanceCell.textContent = '-';
-        }
-        row.appendChild(distanceCell);
-        
-        // Lat/Lon Error column (in miles)
-        const errorCell = document.createElement('td');
-        if (actualLocation) {
-            const predLat = prediction.latitude;
-            const predLon = prediction.longitude;
-            const actualLat = parseFloat(actualLocation.latitude);
-            const actualLon = parseFloat(actualLocation.longitude);
-            
-            const latErrorDeg = predLat - actualLat;
-            let lonErrorDeg = predLon - actualLon;
-            
-            // Handle longitude wrapping
-            if (lonErrorDeg > 180) lonErrorDeg -= 360;
-            if (lonErrorDeg < -180) lonErrorDeg += 360;
-            
-            // Convert to miles
-            const latErrorMiles = degreesToMilesLat(latErrorDeg);
-            const lonErrorMiles = degreesToMilesLon(lonErrorDeg, predLat);
-            
-            // Format with appropriate signs
-            const latSign = latErrorMiles >= 0 ? '+' : '';
-            const lonSign = lonErrorMiles >= 0 ? '+' : '';
-            
-            errorCell.className = 'lat-lon-error';
-            errorCell.textContent = `${latSign}${latErrorMiles.toFixed(1)} mi, ${lonSign}${lonErrorMiles.toFixed(1)} mi`;
-        } else {
-            errorCell.className = 'prediction-location-pending';
-            errorCell.textContent = '-';
-        }
-        row.appendChild(errorCell);
-        
-        // Minutes Ahead column
-        const minutesAheadCell = document.createElement('td');
-        minutesAheadCell.className = 'minutes-ahead';
-        minutesAheadCell.textContent = `${minutesAhead.toFixed(0)} min`;
-        row.appendChild(minutesAheadCell);
-        
-        tableBody.appendChild(row);
-    });
-}
 
 // Normalize longitude path to avoid wrapping issues
 // Adjusts longitudes to follow the shortest path, avoiding jumps across ±180°
@@ -1830,9 +1298,8 @@ function normalizeLongitudePath(points) {
     return normalized;
 }
 
-// Store current path data for redrawing on map move
+// Store current path data for redrawing on map move (store original wrapped coordinates)
 let currentPathData = null;
-let currentSgp4PathData = null;
 
 // Draw prediction paths on the map using API data
 function drawPredictionPathsFromAPI(baseLocation, predictionsData) {
@@ -1844,6 +1311,137 @@ function drawPredictionPathsFromAPI(baseLocation, predictionsData) {
     
     if (!isCurrentLocation || !predictionsData) {
         // Clear paths if not current location or no predictions
+    predictionPathPolylines.forEach(polyline => {
+        if (polyline && map.hasLayer(polyline)) {
+            map.removeLayer(polyline);
+        }
+    });
+    predictionPathPolylines = [];
+        currentPathData = null;
+        return;
+    }
+    
+    // Remove existing prediction paths
+    predictionPathPolylines.forEach(polyline => {
+            if (polyline && map.hasLayer(polyline)) {
+                map.removeLayer(polyline);
+            }
+        });
+    predictionPathPolylines = [];
+    
+    // Draw orbital mechanics predictions (18 predictions: 5, 10, ..., 90 minutes)
+    const orbitalPredictions = predictionsData.orbital_mechanics || [];
+    if (orbitalPredictions.length > 0) {
+        const baseLat = parseFloat(baseLocation.latitude);
+        let baseLon = parseFloat(baseLocation.longitude);
+        
+        // Validate base coordinates
+        if (isNaN(baseLat) || isNaN(baseLon)) {
+            console.warn('drawPredictionPathsFromAPI: Invalid base location coordinates', baseLocation);
+            return;
+        }
+        
+        while (baseLon > 180) baseLon -= 360;
+        while (baseLon < -180) baseLon += 360;
+        
+        // Group predictions by their predicted timestamp (rounded to 5 minutes)
+        const predictionsByTimestamp = {};
+        orbitalPredictions.forEach(pred => {
+            let lat = parseFloat(pred.latitude);
+            let lon = parseFloat(pred.longitude);
+            
+            // Skip invalid coordinates
+            if (isNaN(lat) || isNaN(lon)) {
+                return;
+            }
+            
+            // Round predicted timestamp to 5-minute interval for grouping
+            const predTime = new Date(pred.timestamp);
+            const minutes = predTime.getMinutes();
+            const roundedMinutes = Math.floor(minutes / 5) * 5;
+            const roundedTime = new Date(predTime);
+            roundedTime.setMinutes(roundedMinutes);
+            roundedTime.setSeconds(0);
+            roundedTime.setMilliseconds(0);
+            const timestampKey = roundedTime.toISOString();
+            
+            if (!predictionsByTimestamp[timestampKey]) {
+                predictionsByTimestamp[timestampKey] = [];
+            }
+            
+            // Normalize longitude to [-180, 180]
+            while (lon > 180) lon -= 360;
+            while (lon < -180) lon += 360;
+            lat = Math.max(-90, Math.min(90, lat));
+            
+            predictionsByTimestamp[timestampKey].push([lat, lon]);
+        });
+        
+        // Calculate centroid for each timestamp group
+        const centroidPoints = [];
+        const sortedTimestamps = Object.keys(predictionsByTimestamp).sort();
+        
+        sortedTimestamps.forEach(timestampKey => {
+            const points = predictionsByTimestamp[timestampKey];
+            if (points.length === 0) return;
+            
+            // Calculate centroid (average of all points for this timestamp)
+            let sumLat = 0;
+            const lonValues = [];
+            
+            points.forEach(([lat, lon]) => {
+                sumLat += lat;
+                lonValues.push(lon);
+            });
+            
+            // For longitude, calculate centroid handling wrapping
+            // Find the reference point (first point) and calculate relative offsets
+            const refLon = lonValues[0];
+            let sumOffset = 0;
+            
+            lonValues.forEach(lon => {
+                let offset = lon - refLon;
+                // Handle wrapping - choose shortest path
+                if (offset > 180) offset -= 360;
+                if (offset < -180) offset += 360;
+                sumOffset += offset;
+            });
+            
+            const avgOffset = sumOffset / lonValues.length;
+            let centroidLon = refLon + avgOffset;
+            
+            // Normalize back to [-180, 180]
+            while (centroidLon > 180) centroidLon -= 360;
+            while (centroidLon < -180) centroidLon += 360;
+            
+            const centroidLat = sumLat / points.length;
+            centroidPoints.push([centroidLat, centroidLon]);
+        });
+        
+        // Add current location as first point
+        centroidPoints.unshift([baseLat, baseLon]);
+        
+        // Store original wrapped coordinates (not normalized) for redrawing
+        currentPathData = { 
+            pathPoints: centroidPoints.map(p => [p[0], p[1]]) // Deep copy
+        };
+        
+        predictionPathPolylines.forEach(polyline => {
+            if (polyline && map.hasLayer(polyline)) {
+                map.removeLayer(polyline);
+            }
+        });
+        predictionPathPolylines = [];
+        redrawPredictionPaths();
+    }
+}
+
+function redrawPredictionPaths() {
+    if (!currentPathData || !currentPathData.pathPoints || currentPathData.pathPoints.length === 0) {
+        return;
+    }
+    
+    if (!pathVisibility.predicted) {
         predictionPathPolylines.forEach(polyline => {
             if (polyline && map.hasLayer(polyline)) {
                 map.removeLayer(polyline);
@@ -1853,127 +1451,24 @@ function drawPredictionPathsFromAPI(baseLocation, predictionsData) {
         return;
     }
     
-    // Remove existing prediction paths
-    predictionPathPolylines.forEach(polyline => {
-        if (polyline && map.hasLayer(polyline)) {
-            map.removeLayer(polyline);
-        }
-    });
-    predictionPathPolylines = [];
+    if (predictionPathPolylines.length > 0) {
+        return;
+    }
     
-    // Remove existing SGP4 paths
-    sgp4PathPolylines.forEach(polyline => {
-        if (polyline && map.hasLayer(polyline)) {
-            map.removeLayer(polyline);
-        }
-    });
-    sgp4PathPolylines = [];
+    const normalizedPoints = normalizeLongitudePath(currentPathData.pathPoints);
     
-    // Draw orbital mechanics predictions (18 predictions: 5, 10, ..., 90 minutes)
-    const orbitalPredictions = predictionsData.orbital_mechanics || [];
-    if (orbitalPredictions.length > 0) {
-        const rawPoints = orbitalPredictions.map(pred => {
-            let lat = parseFloat(pred.latitude);
-            let lon = parseFloat(pred.longitude);
-            
-            // Normalize longitude to [-180, 180]
-            while (lon > 180) lon -= 360;
-            while (lon < -180) lon += 360;
-            lat = Math.max(-90, Math.min(90, lat));
-            
-            return [lat, lon];
-        });
-        
-        // Add current location as first point
-        rawPoints.unshift([parseFloat(baseLocation.latitude), parseFloat(baseLocation.longitude)]);
-        
-        // Normalize longitudes to follow shortest path (unwrap)
-        const pathPoints = normalizeLongitudePath(rawPoints);
-        
-        // Store path data for redrawing on map move
-        currentPathData = { pathPoints };
-        
-        // Draw polylines for all visible world copies (only if visibility is enabled)
-        if (pathVisibility.predicted && pathPoints.length > 0) {
-            const bounds = map.getBounds();
-            const west = bounds.getWest();
-            const east = bounds.getEast();
-            
-            // Calculate base longitude offset
-            const firstLon = pathPoints[0][1];
-            let baseLon = firstLon;
-            while (baseLon > west - 360) baseLon -= 360;
-            
-            // Create multiple copies of the path at different longitude offsets
-            for (let offsetLon = baseLon; offsetLon <= east + 720; offsetLon += 360) {
-                const offset = offsetLon - firstLon;
-                const offsetPathPoints = pathPoints.map(point => [point[0], point[1] + offset]);
-                
-                const polyline = L.polyline(offsetPathPoints, {
-                    color: '#FF6B6B',
-                    weight: 3,
-                    opacity: 0.8,
-                    dashArray: '5, 5'
-                }).addTo(map);
-                
-                // Add popup
-                polyline.bindPopup('Predicted Path (Orbital Mechanics)');
-                predictionPathPolylines.push(polyline);
-            }
+    for (let offset = -720; offset <= 720; offset += 360) {
+        const offsetPathPoints = normalizedPoints.map(point => [point[0], point[1] + offset]);
+                    const polyline = L.polyline(offsetPathPoints, {
+                color: '#FF6B6B',
+                weight: 3,
+                opacity: 0.8,
+                dashArray: '5, 5'
+                    }).addTo(map);
+                    
+        polyline.bindPopup('Predicted Path (Orbital Mechanics)');
+            predictionPathPolylines.push(polyline);
         }
     }
     
-    // Draw SGP4 prediction (single point at 90 minutes)
-    const sgp4Prediction = predictionsData.sgp4;
-    if (sgp4Prediction) {
-        const sgp4Lat = parseFloat(sgp4Prediction.latitude);
-        let sgp4Lon = parseFloat(sgp4Prediction.longitude);
-        
-        // Normalize longitude
-        while (sgp4Lon > 180) sgp4Lon -= 360;
-        while (sgp4Lon < -180) sgp4Lon += 360;
-        
-        const currentPoint = [parseFloat(baseLocation.latitude), parseFloat(baseLocation.longitude)];
-        const sgp4Point = [sgp4Lat, sgp4Lon];
-        const sgp4PathPoints = normalizeLongitudePath([currentPoint, sgp4Point]);
-        
-        // Store SGP4 path data
-        currentSgp4PathData = {
-            pastPoints: [],
-            futurePoints: sgp4PathPoints,
-            baseTimestamp: baseLocation.timestamp
-        };
-        
-        // Draw SGP4 path for all visible world copies (only if visibility is enabled)
-        if (pathVisibility.sgp4 && sgp4PathPoints.length > 0) {
-            const bounds = map.getBounds();
-            const west = bounds.getWest();
-            const east = bounds.getEast();
-            
-            const firstLon = sgp4PathPoints[0][1];
-            let baseLon = firstLon;
-            while (baseLon > west - 360) baseLon -= 360;
-            
-            for (let offsetLon = baseLon; offsetLon <= east + 720; offsetLon += 360) {
-                const offset = offsetLon - firstLon;
-                const offsetPathPoints = sgp4PathPoints.map(point => [point[0], point[1] + offset]);
-                
-                const polyline = L.polyline(offsetPathPoints, {
-                    color: '#4ECDC4', // Teal/cyan for SGP4
-                    weight: 5,
-                    opacity: 1.0,
-                    fillOpacity: 0,
-                    dashArray: '15, 10',
-                    lineCap: 'round',
-                    lineJoin: 'round'
-                }).addTo(map);
-                
-                polyline.bindPopup('True Path (SGP4/TLE) - 90 minutes');
-                sgp4PathPolylines.push(polyline);
-            }
-            
-            // Bring to front to ensure visibility
-            sgp4PathPolylines.forEach(polyline => polyline.bringToFront());
-        }
-    }
-}
+

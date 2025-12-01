@@ -26,6 +26,241 @@ h1 {
     font-size: 2.5em;
 }
 
+/* Navigation tabs */
+.main-nav {
+    display: flex;
+    justify-content: center;
+    gap: 10px;
+    margin-top: 1rem;
+}
+
+.nav-tab {
+    padding: 10px 20px;
+    background-color: #2d2d2d;
+    color: #ffffff;
+    text-decoration: none;
+    border-radius: 5px;
+    transition: background-color 0.3s, color 0.3s;
+    font-size: 1em;
+    border: 1px solid #3d3d3d;
+    cursor: pointer;
+    font-family: inherit;
+}
+
+.nav-tab:hover {
+    background-color: #3d3d3d;
+    color: #4a9eff;
+}
+
+.nav-tab.active {
+    background-color: #4a9eff;
+    color: #ffffff;
+    border-color: #4a9eff;
+}
+
+/* View sections */
+.view-section {
+    display: none;
+}
+
+.view-section.active {
+    display: block;
+}
+
+/* Metrics page styles */
+.graph-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 15px;
+}
+
+.graph-header h2 {
+    margin: 0;
+}
+
+/* Custom dropdown */
+.custom-dropdown {
+    position: relative;
+    min-width: 180px;
+}
+
+.dropdown-selected {
+    background-color: #2d2d2d;
+    color: #ffffff;
+    border: 1px solid #3d3d3d;
+    border-radius: 5px;
+    padding: 8px 12px;
+    font-size: 1em;
+    cursor: pointer;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    transition: all 0.2s;
+    user-select: none;
+}
+
+.dropdown-selected:hover {
+    background-color: #3d3d3d;
+    border-color: #4a9eff;
+}
+
+.custom-dropdown.active .dropdown-selected {
+    border-color: #4a9eff;
+    background-color: #3d3d3d;
+}
+
+.dropdown-text {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.dropdown-arrow {
+    font-size: 0.8em;
+    transition: transform 0.2s;
+    color: #888;
+}
+
+.custom-dropdown.active .dropdown-arrow {
+    transform: rotate(180deg);
+    color: #4a9eff;
+}
+
+.dropdown-options {
+    position: absolute;
+    top: calc(100% + 5px);
+    left: 0;
+    right: 0;
+    background-color: #2d2d2d;
+    border: 1px solid #3d3d3d;
+    border-radius: 5px;
+    overflow: hidden;
+    display: none;
+    z-index: 1000;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+}
+
+.custom-dropdown.active .dropdown-options {
+    display: block;
+}
+
+.dropdown-option {
+    padding: 10px 12px;
+    color: #ffffff;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    transition: background-color 0.2s;
+}
+
+.dropdown-option:hover {
+    background-color: #3d3d3d;
+}
+
+.dropdown-option.selected {
+    background-color: #4a9eff;
+    color: #ffffff;
+}
+
+.graph-container {
+    position: relative;
+    width: 100%;
+    height: 400px;
+    min-height: 400px;
+}
+
+.graph-wrapper {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    display: none;
+}
+
+.graph-wrapper.active {
+    display: block;
+}
+
+.graph-canvas {
+    width: 100% !important;
+    height: 100% !important;
+}
+
+@media (max-width: 768px) {
+    .graph-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 10px;
+    }
+    
+    .graph-selector {
+        width: 100%;
+    }
+}
+
+.map-container h2 {
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    hyphens: auto;
+    padding: 20px 20px 0 20px;
+    margin: 0 0 15px 0;
+}
+
+/* Graph icons */
+.graph-icon {
+    margin-right: 8px;
+    font-size: 1em;
+    position: relative;
+    display: inline-block;
+}
+
+.longitude-icon {
+    color: #4a9eff;
+}
+
+.longitude-icon::before {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: 2px;
+    height: 16px;
+    background-color: #4a9eff;
+    opacity: 0.8;
+}
+
+.latitude-icon {
+    color: #FF6B6B;
+}
+
+.latitude-icon::before {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: 16px;
+    height: 2px;
+    background-color: #FF6B6B;
+    opacity: 0.8;
+}
+
+#metrics-map {
+    height: 500px;
+    width: 100%;
+    border-radius: 5px;
+}
+
+@media (max-width: 768px) {
+    .metrics-graphs {
+        grid-template-columns: 1fr;
+    }
+}
+
 /* Card styles */
 .card {
     background-color: #2d2d2d;
@@ -432,6 +667,9 @@ footer {
     margin: 8px 12px;
     line-height: 1.4;
     white-space: pre-line;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    max-width: 200px;
 }
 
 .leaflet-popup-content b {

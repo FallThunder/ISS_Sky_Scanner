@@ -384,14 +384,15 @@ def generate_predictions(
     try:
         logger.info(f"Generating predictions for timestamp: {source_timestamp}")
         
-        # Round timestamp to 5-minute interval for document ID
+        # Round timestamp to 5-minute interval for document ID and calculations
         rounded_timestamp = round_timestamp_to_5_minutes(source_timestamp)
         logger.info(f"Rounded timestamp to: {rounded_timestamp}")
         
-        # Parse source timestamp for calculations
-        source_dt = datetime.fromisoformat(source_timestamp.replace('Z', '+00:00'))
+        # Parse rounded timestamp for calculations (to ensure all predictions are on 5-minute boundaries)
+        source_dt_rounded = datetime.fromisoformat(rounded_timestamp.replace('Z', '+00:00'))
         
         # Get previous location to calculate velocity for orbital mechanics predictions
+        # Use original timestamp for querying (to find the actual previous location)
         previous_location = get_previous_location(source_timestamp)
         
         if not previous_location:
@@ -404,8 +405,9 @@ def generate_predictions(
         logger.info(f"Using stored previous position: lat={previous_lat:.4f}, lon={previous_lon:.4f}")
         
         # Calculate time interval between current and previous location
+        # Use rounded timestamp for consistency
         previous_dt = datetime.fromisoformat(previous_location['timestamp'].replace('Z', '+00:00'))
-        time_interval_minutes = (source_dt - previous_dt).total_seconds() / 60.0
+        time_interval_minutes = (source_dt_rounded - previous_dt).total_seconds() / 60.0
         
         # Ensure reasonable time interval (should be around 5 minutes)
         if time_interval_minutes <= 0:
@@ -422,8 +424,8 @@ def generate_predictions(
         # Generate 18 predictions using orbital mechanics (5, 10, 15, ..., 90 minutes ahead)
         predictions = []
         for minutes_ahead in range(5, 95, 5):  # 5, 10, 15, ..., 90
-            # Calculate future timestamp
-            future_dt = source_dt + timedelta(minutes=minutes_ahead)
+            # Calculate future timestamp using rounded source timestamp (ensures predictions are on 5-minute boundaries)
+            future_dt = source_dt_rounded + timedelta(minutes=minutes_ahead)
             future_timestamp = future_dt.isoformat()
             future_timestamp_unix = int(future_dt.timestamp())
             
@@ -454,7 +456,7 @@ def generate_predictions(
         tle_data = fetch_tle_data()
         if tle_data:
             tle_line1, tle_line2 = tle_data
-            sgp4_future_dt = source_dt + timedelta(minutes=90)
+            sgp4_future_dt = source_dt_rounded + timedelta(minutes=90)
             sgp4_position = get_sgp4_position(tle_line1, tle_line2, sgp4_future_dt)
             
             if sgp4_position:
@@ -481,7 +483,7 @@ def generate_predictions(
         # Prepare document data
         doc_data = OrderedDict([
             ('source_timestamp', rounded_timestamp),
-            ('source_timestamp_unix', int(source_dt.timestamp())),
+            ('source_timestamp_unix', int(source_dt_rounded.timestamp())),  # Use rounded timestamp for consistency
             ('source_document_id', source_document_id),
             ('source_document_ref', source_doc_ref),
             ('source_latitude', source_latitude),

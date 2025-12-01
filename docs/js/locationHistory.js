@@ -7,7 +7,8 @@ const PREDICTION_ENTRIES = 288; // 24 hours of predictions (1 entry every 5 minu
 class LocationHistoryManager {
     constructor() {
         this.locations = this.loadFromStorage() || [];
-        this.predictions = []; // Future predictions (now from API)
+        this.predictions = []; // Future predictions (now from API) - flat array for backward compatibility
+        this.predictionsBySource = {}; // Predictions grouped by source_timestamp
     }
 
     // Load history from session storage
@@ -103,77 +104,91 @@ class LocationHistoryManager {
         };
     }
 
-    // Set predictions from API data
+    // Round timestamp to nearest 5-minute interval (ignoring seconds)
+    roundTimestampTo5Minutes(isoTimestamp) {
+        const dt = new Date(isoTimestamp);
+        const minutes = dt.getMinutes();
+        const roundedMinutes = Math.floor(minutes / 5) * 5;
+        const rounded = new Date(dt);
+        rounded.setMinutes(roundedMinutes);
+        rounded.setSeconds(0);
+        rounded.setMilliseconds(0);
+        return rounded.toISOString();
+    }
+
+    // Set predictions from API data, grouped by source timestamp (rounded to 5 minutes)
     setPredictionsFromAPI(predictionsData) {
         if (!predictionsData) {
             this.predictions = [];
+            this.predictionsBySource = {};
             return;
         }
+
+        // Group predictions by source_timestamp (rounded to 5-minute intervals)
+        const predictionsBySource = {};
         
-        // Combine orbital mechanics and SGP4 predictions
-        const allPredictions = [];
-        
-        // Add orbital mechanics predictions (18 predictions)
+        // Add orbital mechanics predictions
         if (predictionsData.orbital_mechanics && Array.isArray(predictionsData.orbital_mechanics)) {
             predictionsData.orbital_mechanics.forEach(pred => {
-                allPredictions.push({
+                const rawSourceTs = pred.source_timestamp || pred.timestamp;
+                // Round source timestamp to 5-minute interval to group predictions correctly
+                const sourceTs = this.roundTimestampTo5Minutes(rawSourceTs);
+                
+                if (!predictionsBySource[sourceTs]) {
+                    predictionsBySource[sourceTs] = [];
+                }
+                predictionsBySource[sourceTs].push({
                     timestamp: pred.timestamp,
                     latitude: pred.latitude.toString(),
                     longitude: pred.longitude.toString(),
                     isPredicted: true,
                     method: pred.method || 'orbital_mechanics',
-                    minutes_ahead: pred.minutes_ahead
+                    minutes_ahead: pred.minutes_ahead,
+                    source_timestamp: sourceTs
                 });
             });
         }
         
-        // Add SGP4 predictions if available (can be multiple from different prediction cycles)
+        // Add SGP4 predictions if available
         if (predictionsData.sgp4) {
-            // Handle both array and single object formats
             const sgp4Predictions = Array.isArray(predictionsData.sgp4) 
                 ? predictionsData.sgp4 
                 : [predictionsData.sgp4];
             
             sgp4Predictions.forEach(pred => {
-                allPredictions.push({
+                const rawSourceTs = pred.source_timestamp || pred.timestamp;
+                // Round source timestamp to 5-minute interval to group predictions correctly
+                const sourceTs = this.roundTimestampTo5Minutes(rawSourceTs);
+                
+                if (!predictionsBySource[sourceTs]) {
+                    predictionsBySource[sourceTs] = [];
+                }
+                predictionsBySource[sourceTs].push({
                     timestamp: pred.timestamp,
                     latitude: pred.latitude.toString(),
                     longitude: pred.longitude.toString(),
                     isPredicted: true,
                     method: 'sgp4',
-                    minutes_ahead: pred.minutes_ahead
+                    minutes_ahead: pred.minutes_ahead,
+                    source_timestamp: sourceTs
                 });
             });
         }
         
-        // Sort by timestamp (earliest first)
-        allPredictions.sort((a, b) => {
-            return new Date(a.timestamp) - new Date(b.timestamp);
-        });
+        // Store grouped predictions
+        this.predictionsBySource = predictionsBySource;
         
+        // Also keep flat array for backward compatibility
+        const allPredictions = [];
+        Object.values(predictionsBySource).forEach(preds => {
+            allPredictions.push(...preds);
+        });
+        allPredictions.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
         this.predictions = allPredictions;
-        const sgp4Count = Array.isArray(predictionsData.sgp4) 
-            ? predictionsData.sgp4.length 
-            : (predictionsData.sgp4 ? 1 : 0);
-        console.log('Set', this.predictions.length, 'predictions from API (', 
-            predictionsData.orbital_mechanics?.length || 0, 'orbital mechanics +', 
-            sgp4Count, 'SGP4)');
         
-        // Log prediction distribution by timestamp for debugging
-        const timestampGroups = {};
-        allPredictions.forEach(pred => {
-            const ts = pred.timestamp;
-            if (!timestampGroups[ts]) {
-                timestampGroups[ts] = [];
-            }
-            timestampGroups[ts].push(pred.method);
-        });
-        console.log('Prediction distribution by timestamp:', Object.keys(timestampGroups).length, 'unique timestamps');
-        Object.entries(timestampGroups).forEach(([ts, methods]) => {
-            if (methods.length > 1) {
-                console.log(`  ${ts}: ${methods.length} predictions (${methods.join(', ')})`);
-            }
-        });
+        const sourceCount = Object.keys(predictionsBySource).length;
+        console.log('Set predictions from API:', sourceCount, 'source timestamps,', 
+            allPredictions.length, 'total predictions');
     }
 
     // Get all stored locations
@@ -263,23 +278,46 @@ class LocationHistoryManager {
     }
 
     // Get combined history and predictions for the full 48-hour range
+    // Returns one entry per source timestamp, with predictions grouped by source
     getAllLocations() {
-        // Get filled history with placeholders (oldest first)
         const filledHistory = this.fillGapsInHistory();
+        const allLocations = [...filledHistory];
         
-        // Ensure predictions are sorted by timestamp (earliest first)
-        const sortedPredictions = [...this.predictions].sort((a, b) => {
-            return new Date(a.timestamp) - new Date(b.timestamp);
-        });
-        
-        const allLocations = [...filledHistory, ...sortedPredictions];
-        
-        console.log('getAllLocations - Filled history count:', filledHistory.length, 'Predictions count:', sortedPredictions.length, 'Total:', allLocations.length);
-        if (sortedPredictions.length > 0) {
-            console.log('First prediction:', sortedPredictions[0].timestamp, 'Last prediction:', sortedPredictions[sortedPredictions.length - 1].timestamp);
+        // Add one entry per source timestamp (not per prediction)
+        if (this.predictionsBySource) {
+            const sourceTimestamps = Object.keys(this.predictionsBySource).sort((a, b) => {
+                return new Date(a) - new Date(b);
+            });
+            
+            sourceTimestamps.forEach(sourceTs => {
+                const predictions = this.predictionsBySource[sourceTs];
+                if (predictions && predictions.length > 0) {
+                    // Create a grouped entry with all predictions for this source timestamp
+                    allLocations.push({
+                        timestamp: sourceTs,
+                        latitude: predictions[0].latitude, // Use first prediction's location as representative
+                        longitude: predictions[0].longitude,
+                        isPredicted: true,
+                        isPredictionGroup: true, // Flag to indicate this is a prediction group
+                        predictions: predictions // Store all predictions for this source timestamp
+                    });
+                }
+            });
         }
         
+        console.log('getAllLocations - History:', filledHistory.length, 
+            'Prediction groups:', Object.keys(this.predictionsBySource || {}).length,
+            'Total:', allLocations.length);
+        
         return allLocations;
+    }
+    
+    // Get predictions for a specific source timestamp
+    getPredictionsForSource(sourceTimestamp) {
+        if (!this.predictionsBySource) {
+            return [];
+        }
+        return this.predictionsBySource[sourceTimestamp] || [];
     }
 
     // Get location at specific index (from combined history + predictions)

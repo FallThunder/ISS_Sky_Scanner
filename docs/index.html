@@ -12,6 +12,8 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css"
           integrity="sha512-9usAa10IRO0HhonpyAIVpjrylPvoDwiPUiKdWk5t3PyolY1cOd4DSE0Ga+ri4AuTroPR5aQvXU9xC6qOPnzFeg=="
           crossorigin="anonymous" referrerpolicy="no-referrer" />
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <!-- Our CSS -->
     <link rel="stylesheet" href="./css/styles.css">
     <link rel="stylesheet" href="./css/chat.css">
@@ -28,8 +30,14 @@
     <div class="container">
         <header>
             <h1>ISS Sky Scanner</h1>
+            <nav class="main-nav">
+                <button class="nav-tab active" id="nav-tab-map" data-view="map">Map</button>
+                <button class="nav-tab" id="nav-tab-metrics" data-view="metrics">Metrics</button>
+            </nav>
         </header>
         <main>
+            <!-- Map View -->
+            <div id="view-map" class="view-section active">
             <div class="iss-info">
                 <div class="card" id="location">
                     <h2>Current Location</h2>
@@ -56,11 +64,7 @@
                     <div class="legend-items">
                         <div class="legend-item clickable" data-path-type="predicted" id="legend-predicted">
                             <span class="legend-color" style="background-color: #FF6B6B;"></span>
-                            <span class="legend-label">Predicted Path (Polynomial)</span>
-                        </div>
-                        <div class="legend-item clickable" data-path-type="sgp4" id="legend-sgp4">
-                            <span class="legend-color" style="background-color: #4ECDC4;"></span>
-                            <span class="legend-label">True Path (SGP4) - Future</span>
+                            <span class="legend-label">Predicted Path (custom model)</span>
                         </div>
                     </div>
                 </div>
@@ -71,7 +75,7 @@
                     <div class="slider-range-markers">
                         <span class="range-marker left clickable" id="nav-24h-ago">-24h</span>
                         <span class="range-marker center clickable" id="nav-now">Now</span>
-                        <span class="range-marker right clickable" id="nav-24h-future">+24h</span>
+                        <span class="range-marker right clickable" id="nav-90m-future">+90m</span>
                     </div>
                     <input type="range" id="history-slider" min="0" value="0" class="slider">
                     <div class="slider-nav-controls">
@@ -80,12 +84,12 @@
                         </button>
                         <div class="time-skip-buttons">
                             <button class="nav-button time-skip-button" id="nav-back-1h" title="Go back 1 hour">-1h</button>
+                            <button class="nav-button time-skip-button" id="nav-back-30min" title="Go back 30 minutes">-30m</button>
                             <button class="nav-button time-skip-button" id="nav-back-15min" title="Go back 15 minutes">-15m</button>
-                            <button class="nav-button time-skip-button" id="nav-back-5min" title="Go back 5 minutes">-5m</button>
                         </div>
                         <div class="time-skip-buttons">
-                            <button class="nav-button time-skip-button" id="nav-forward-5min" title="Go forward 5 minutes">+5m</button>
                             <button class="nav-button time-skip-button" id="nav-forward-15min" title="Go forward 15 minutes">+15m</button>
+                            <button class="nav-button time-skip-button" id="nav-forward-30min" title="Go forward 30 minutes">+30m</button>
                             <button class="nav-button time-skip-button" id="nav-forward-1h" title="Go forward 1 hour">+1h</button>
                         </div>
                         <button class="nav-button nav-step-button" id="nav-step-forward" aria-label="Next step" title="Next (5 min)">
@@ -103,55 +107,72 @@
             <div class="card" id="error" style="display: none;">
                 <p class="error-message"></p>
             </div>
-            <div class="card" id="prediction-accuracy">
-                <h2>Prediction Accuracy (Next Hour)</h2>
-                <div id="prediction-table-container">
-                    <table id="prediction-table">
-                        <thead>
-                            <tr>
-                                <th>Time</th>
-                                <th>Predicted Location</th>
-                                <th>Actual Location</th>
-                                <th>Distance</th>
-                                <th>Lat/Lon Error</th>
-                                <th>Min Ahead</th>
-                            </tr>
-                        </thead>
-                        <tbody id="prediction-table-body">
-                            <tr>
-                                <td colspan="6" class="no-predictions">Predictions will appear here once calculated...</td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-            <div class="card" id="historical-validation">
-                <h2>Historical Validation (Past Hour)</h2>
-                <p class="validation-description">Predictions made 1 hour ago compared with actual data using polynomial equations</p>
-                <div id="historical-table-container">
-                    <table id="historical-table">
-                        <thead>
-                            <tr>
-                                <th>Time</th>
-                                <th>Predicted Location</th>
-                                <th>Actual Location</th>
-                                <th>Distance</th>
-                                <th>Lat/Lon Error</th>
-                                <th>Min Ahead</th>
-                            </tr>
-                        </thead>
-                        <tbody id="historical-table-body">
-                            <tr>
-                                <td colspan="7" class="no-predictions">Historical validation will appear once we have 1+ hour of data...</td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
             <div class="refresh-container">
                 <div class="auto-refresh-indicator">
                     <i class="fas fa-sync-alt"></i>
                     <span>Auto-refreshing every 5 minutes</span>
+                </div>
+            </div>
+            </div>
+            
+            <!-- Metrics View -->
+            <div id="view-metrics" class="view-section" style="display: none;">
+                <div class="card">
+                    <div class="graph-header">
+                        <h2>Historical Location Data</h2>
+                        <div class="custom-dropdown" id="graph-selector">
+                            <div class="dropdown-selected" id="dropdown-selected">
+                                <span class="dropdown-text">
+                                    <i class="fas fa-globe graph-icon latitude-icon"></i>
+                                    Latitude
+                                </span>
+                                <i class="fas fa-chevron-down dropdown-arrow"></i>
+                            </div>
+                            <div class="dropdown-options" id="dropdown-options">
+                                <div class="dropdown-option" data-value="latitude">
+                                    <i class="fas fa-globe graph-icon latitude-icon"></i>
+                                    Latitude
+                                </div>
+                                <div class="dropdown-option" data-value="longitude">
+                                    <i class="fas fa-globe graph-icon longitude-icon"></i>
+                                    Longitude
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="graph-container">
+                        <div class="graph-wrapper active" id="graph-wrapper-1">
+                            <canvas id="metrics-graph-1" class="graph-canvas"></canvas>
+                        </div>
+                        <div class="graph-wrapper" id="graph-wrapper-2">
+                            <canvas id="metrics-graph-2" class="graph-canvas"></canvas>
+                        </div>
+                    </div>
+                </div>
+                <div class="card map-container">
+                    <h2>Metrics Visualization Map</h2>
+                    <div id="metrics-map"></div>
+                    <div id="metrics-path-legend" class="path-legend">
+                        <h3>Path Legend</h3>
+                        <div class="legend-items">
+                            <div class="legend-item clickable" data-path-type="true-historical" id="metrics-legend-true-historical">
+                                <span class="legend-color" style="background-color: #FF6B6B;"></span>
+                                <span class="legend-label">True Historical Path</span>
+                            </div>
+                            <div class="legend-item clickable" data-path-type="predicted-90min" id="metrics-legend-predicted-90min">
+                                <span class="legend-color" style="background-color: #FFA500;"></span>
+                                <span class="legend-label">Predicted (90 min ago)</span>
+                            </div>
+                            <div class="legend-item clickable" data-path-type="predicted-60min" id="metrics-legend-predicted-60min">
+                                <span class="legend-color" style="background-color: #FFD700;"></span>
+                                <span class="legend-label">Predicted (60 min ago)</span>
+                            </div>
+                            <div class="legend-item clickable" data-path-type="predicted-30min" id="metrics-legend-predicted-30min">
+                                <span class="legend-color" style="background-color: #FFFF00;"></span>
+                                <span class="legend-label">Predicted (30 min ago)</span>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </main>
@@ -164,7 +185,7 @@
     </div>
 
     <!-- Chat Widget -->
-    <button id="chatButton" aria-label="Open chat">
+    <button id="chatButton" aria-label="Open chat" style="display: none;">
         <i class="fas fa-comments"></i>
     </button>
     <div class="chat-panel" id="chatPanel">
@@ -187,16 +208,114 @@
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
             integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
             crossorigin=""></script>
-    
+            
     <!-- Our JavaScript -->
     <script type="module" src="./js/config.js"></script>
     <!-- issPrediction.js removed - predictions now come from API -->
     <script type="module" src="./js/main.js"></script>
+    <script type="module" src="./js/metrics.js"></script>
     <script type="module" src="./js/chat.js"></script>
     <script type="module" src="./js/message.js"></script>
     <script type="module">
         import { showChangelog } from './js/changelog.js';
-        document.addEventListener('DOMContentLoaded', showChangelog);
+        import { initMetricsPage, handleMetricsViewShown } from './js/metrics.js';
+        
+        let metricsInitialized = false;
+        
+        document.addEventListener('DOMContentLoaded', () => {
+            showChangelog();
+            // Initialize metrics page when metrics view is shown
+            window.addEventListener('metricsViewShown', () => {
+                if (!metricsInitialized) {
+                    initMetricsPage();
+                    metricsInitialized = true;
+                }
+                handleMetricsViewShown();
+            });
+        });
+    </script>
+    <script>
+        // Tab navigation without page reload
+        document.addEventListener('DOMContentLoaded', () => {
+            const navTabs = document.querySelectorAll('.nav-tab');
+            const viewSections = document.querySelectorAll('.view-section');
+            
+            // Check for hash in URL (for direct navigation)
+            const hash = window.location.hash;
+            let initialView = 'map';
+            if (hash === '#metrics') {
+                initialView = 'metrics';
+            }
+            
+            // Initialize view based on URL hash or default to map
+            function switchView(viewName) {
+                // Update active tab
+                navTabs.forEach(tab => {
+                    if (tab.dataset.view === viewName) {
+                        tab.classList.add('active');
+                    } else {
+                        tab.classList.remove('active');
+                    }
+                });
+                
+                // Show/hide view sections
+                viewSections.forEach(section => {
+                    if (section.id === `view-${viewName}`) {
+                        section.classList.add('active');
+                        section.style.display = 'block';
+                        
+                        // If switching to map view, invalidate map size after a brief delay
+                        // to ensure the container is visible before resizing
+                        if (viewName === 'map') {
+                            setTimeout(() => {
+                                // Trigger a custom event that main.js can listen to
+                                window.dispatchEvent(new CustomEvent('mapViewShown'));
+                            }, 100);
+                        }
+                        
+                        // If switching to metrics view, initialize metrics page
+                        if (viewName === 'metrics') {
+                            setTimeout(() => {
+                                // Trigger a custom event that metrics.js can listen to
+                                window.dispatchEvent(new CustomEvent('metricsViewShown'));
+                            }, 100);
+                        }
+                    } else {
+                        section.classList.remove('active');
+                        section.style.display = 'none';
+                    }
+                });
+                
+                // Update URL hash without reload
+                if (viewName === 'map') {
+                    history.replaceState(null, '', window.location.pathname);
+                } else {
+                    history.replaceState(null, '', `#${viewName}`);
+                }
+            }
+            
+            // Set initial view
+            switchView(initialView);
+            
+            // Add click handlers to tabs
+            navTabs.forEach(tab => {
+                tab.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    const viewName = tab.dataset.view;
+                    switchView(viewName);
+                });
+            });
+            
+            // Handle browser back/forward buttons
+            window.addEventListener('popstate', () => {
+                const hash = window.location.hash;
+                if (hash === '#metrics') {
+                    switchView('metrics');
+                } else {
+                    switchView('map');
+                }
+            });
+        });
     </script>
 </body>
 </html>

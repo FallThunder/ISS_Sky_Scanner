@@ -4,7 +4,7 @@ from google.auth.transport.requests import Request
 from google.oauth2 import id_token
 from google.cloud import secretmanager
 from google.cloud import firestore
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -143,23 +143,21 @@ def get_all_predictions():
         predictions_collection = db.collection('iss_loc_predictions')
         docs = predictions_collection.stream()
         
-        # Dictionary to aggregate predictions by their predicted timestamp
-        # Key: predicted timestamp (rounded to 5 minutes), Value: list of predictions for that time
-        aggregated_predictions = {}
-        
         current_time = datetime.now(timezone.utc)
+        
+        # Separate predictions by method and aggregate
+        orbital_mechanics_all = []
+        sgp4_all = []
         
         for doc in docs:
             doc_data = doc.to_dict()
+            source_timestamp = doc_data.get('source_timestamp')
             predictions = doc_data.get('predictions', [])
             
             for pred in predictions:
                 pred_timestamp = pred.get('timestamp')
                 if not pred_timestamp:
                     continue
-                
-                # Round predicted timestamp to 5-minute interval for grouping
-                rounded_pred_timestamp = round_timestamp_to_5_minutes(pred_timestamp)
                 
                 # Only include predictions for future times
                 try:
@@ -169,26 +167,15 @@ def get_all_predictions():
                 except Exception:
                     continue
                 
-                # Initialize list for this timestamp if it doesn't exist
-                if rounded_pred_timestamp not in aggregated_predictions:
-                    aggregated_predictions[rounded_pred_timestamp] = []
+                # Add source_timestamp to each prediction
+                pred_with_source = pred.copy()
+                pred_with_source['source_timestamp'] = source_timestamp
                 
-                # Add this prediction to the list for this timestamp
-                aggregated_predictions[rounded_pred_timestamp].append(pred)
-        
-        # Separate predictions by method and aggregate
-        orbital_mechanics_all = []
-        sgp4_all = []
-        
-        for timestamp, preds in aggregated_predictions.items():
-            for pred in preds:
                 method = pred.get('method', 'orbital_mechanics')
                 if method == 'sgp4':
-                    # For SGP4, we want all predictions (one per source timestamp)
-                    sgp4_all.append(pred)
+                    sgp4_all.append(pred_with_source)
                 else:
-                    # For orbital mechanics, we want all predictions
-                    orbital_mechanics_all.append(pred)
+                    orbital_mechanics_all.append(pred_with_source)
         
         # Sort by timestamp
         orbital_mechanics_all.sort(key=lambda x: x.get('timestamp', ''))
@@ -205,6 +192,106 @@ def get_all_predictions():
     except Exception as e:
         logger.error(f"Error fetching all predictions: {str(e)}")
         return None
+
+
+def get_historical_predictions():
+    """
+    Fetches predictions made at 90, 60, and 30 minutes ago (rounded to 5-minute intervals).
+    Filters predictions to only include those that fall within the 90-minute historical window.
+    
+    Returns:
+        dict: Predictions grouped by source time period, or None if error
+    """
+    try:
+        current_time = datetime.now(timezone.utc)
+        
+        # Calculate timestamps for 90, 60, and 30 minutes ago
+        time_90min_ago = current_time - timedelta(minutes=90)
+        time_60min_ago = current_time - timedelta(minutes=60)
+        time_30min_ago = current_time - timedelta(minutes=30)
+        
+        # Round each timestamp to nearest 5-minute interval
+        rounded_90min = round_timestamp_to_5_minutes(time_90min_ago.isoformat())
+        rounded_60min = round_timestamp_to_5_minutes(time_60min_ago.isoformat())
+        rounded_30min = round_timestamp_to_5_minutes(time_30min_ago.isoformat())
+        
+        # Calculate cutoff time for filtering (90 minutes before current time)
+        cutoff_time = current_time - timedelta(minutes=90)
+        
+        # Fetch predictions for each time period
+        predictions_90min = []
+        predictions_60min = []
+        predictions_30min = []
+        
+        # Fetch 90-minute predictions
+        pred_data_90 = get_predictions_for_timestamp(rounded_90min)
+        if pred_data_90 and pred_data_90.get('orbital_mechanics'):
+            for pred in pred_data_90['orbital_mechanics']:
+                pred_timestamp = pred.get('timestamp')
+                if pred_timestamp:
+                    try:
+                        pred_dt = datetime.fromisoformat(pred_timestamp.replace('Z', '+00:00'))
+                        # Only include predictions that fall within the 90-minute window
+                        if pred_dt >= cutoff_time and pred_dt <= current_time:
+                            predictions_90min.append({
+                                'timestamp': pred_timestamp,
+                                'latitude': pred.get('latitude'),
+                                'longitude': pred.get('longitude'),
+                                'source_timestamp': pred_data_90.get('source_timestamp')
+                            })
+                    except Exception:
+                        continue
+        
+        # Fetch 60-minute predictions
+        pred_data_60 = get_predictions_for_timestamp(rounded_60min)
+        if pred_data_60 and pred_data_60.get('orbital_mechanics'):
+            for pred in pred_data_60['orbital_mechanics']:
+                pred_timestamp = pred.get('timestamp')
+                if pred_timestamp:
+                    try:
+                        pred_dt = datetime.fromisoformat(pred_timestamp.replace('Z', '+00:00'))
+                        # Only include predictions that fall within the 90-minute window
+                        if pred_dt >= cutoff_time and pred_dt <= current_time:
+                            predictions_60min.append({
+                                'timestamp': pred_timestamp,
+                                'latitude': pred.get('latitude'),
+                                'longitude': pred.get('longitude'),
+                                'source_timestamp': pred_data_60.get('source_timestamp')
+                            })
+                    except Exception:
+                        continue
+        
+        # Fetch 30-minute predictions
+        pred_data_30 = get_predictions_for_timestamp(rounded_30min)
+        if pred_data_30 and pred_data_30.get('orbital_mechanics'):
+            for pred in pred_data_30['orbital_mechanics']:
+                pred_timestamp = pred.get('timestamp')
+                if pred_timestamp:
+                    try:
+                        pred_dt = datetime.fromisoformat(pred_timestamp.replace('Z', '+00:00'))
+                        # Only include predictions that fall within the 90-minute window
+                        if pred_dt >= cutoff_time and pred_dt <= current_time:
+                            predictions_30min.append({
+                                'timestamp': pred_timestamp,
+                                'latitude': pred.get('latitude'),
+                                'longitude': pred.get('longitude'),
+                                'source_timestamp': pred_data_30.get('source_timestamp')
+                            })
+                    except Exception:
+                        continue
+        
+        logger.info(f"Historical predictions: 90min={len(predictions_90min)}, 60min={len(predictions_60min)}, 30min={len(predictions_30min)}")
+        
+        return {
+            'predictions_90min_ago': predictions_90min,
+            'predictions_60min_ago': predictions_60min,
+            'predictions_30min_ago': predictions_30min
+        }
+        
+    except Exception as e:
+        logger.error(f"Error fetching historical predictions: {str(e)}")
+        return None
+
 
 def get_iss_location_with_fact():
     """
@@ -259,6 +346,16 @@ def get_iss_location_with_fact():
         else:
             logger.info("No predictions found")
             location_info['predictions'] = None
+        
+        # Fetch historical predictions for metrics comparison
+        logger.info("Fetching historical predictions for metrics comparison")
+        historical_predictions = get_historical_predictions()
+        if historical_predictions:
+            location_info['historical_predictions'] = historical_predictions
+            logger.info("Added historical predictions to response")
+        else:
+            logger.info("No historical predictions found")
+            location_info['historical_predictions'] = None
         
         return location_info
 

@@ -1,21 +1,20 @@
 import logging
 import functions_framework
 from flask import jsonify, request, make_response
-from utils import get_iss_location_with_fact, get_secret
+from utils import get_all_predictions_data, get_secret
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 @functions_framework.http
-def iss_api_bff_web(request):
+def iss_api_bff_web_predictions(request):
     """
-    Backend for Frontend (BFF) for the web app - Location endpoint.
-    Provides latest ISS location data and fun facts for the web interface.
-    Predictions are handled by a separate function: iss_api_bff_web_predictions.
+    Backend for Frontend (BFF) for the web app - Predictions endpoint.
+    Provides ISS location predictions (current and historical) for the web interface.
     
     Returns:
-        JSON response with ISS location data and fun fact
+        JSON response with prediction data
     """
     # Handle CORS preflight request
     if request.method == 'OPTIONS':
@@ -54,10 +53,11 @@ def iss_api_bff_web(request):
         response.headers.update(cors_headers)
         return response
 
-    # Get ISS location with fun fact
-    result = get_iss_location_with_fact()
-    if not result:
-        response = make_response(jsonify({'error': 'Failed to get ISS location data'}), 500)
+    # Get prediction data
+    result = get_all_predictions_data()
+    if not result or result.get('status') != 'success':
+        error_msg = result.get('error', 'Failed to get prediction data') if result else 'Failed to get prediction data'
+        response = make_response(jsonify({'error': error_msg}), 500)
         response.headers.update(cors_headers)
         return response
 

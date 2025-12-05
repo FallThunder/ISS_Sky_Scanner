@@ -1,6 +1,8 @@
 # ISS Location Backend-for-Frontend (Web)
 
-This Cloud Function serves as a Backend-for-Frontend (BFF) for the web interface. It aggregates data from multiple ISS tracking APIs and formats it for web consumption, providing a rich user experience.
+This Cloud Function serves as a Backend-for-Frontend (BFF) for the web interface, specifically handling ISS location data and fun facts. It aggregates data from multiple ISS tracking APIs and formats it for web consumption.
+
+**Note:** This function handles location and fun fact data only. For prediction data, use `iss_api_bff_web_predictions`.
 
 ## Features
 
@@ -8,28 +10,20 @@ This Cloud Function serves as a Backend-for-Frontend (BFF) for the web interface
 - Retrieves location-based facts using the configurable fact generation service
 - Formats data for web display with additional metadata
 - Provides CORS support for web clients
-- Implements caching for performance
+- Optimized for performance with connection pooling and API key caching
 
 ## API Response Format
 
-The API returns a detailed JSON response for web consumption:
+The API returns a JSON response containing location data and fun fact:
 
 ```json
 {
-    "iss_data": {
-        "latitude": "48.8566",
-        "longitude": "2.3522",
-        "location": "Paris, France",
-        "fact": "Paris has more bridges than Venice.",
-        "timestamp": "2024-01-01T12:00:00Z",
-        "altitude": "408 km",
-        "velocity": "7.66 km/s"
-    },
-    "metadata": {
-        "last_update": "2024-01-01T12:00:00Z",
-        "data_freshness": "5 seconds",
-        "fact_source": "Gemini 1.5 Flash"
-    },
+    "timestamp": "2024-01-01T12:00:00Z",
+    "latitude": "48.8566",
+    "longitude": "2.3522",
+    "location": "Paris, France",
+    "country_code": "FR",
+    "fun_fact": "Paris has more bridges than Venice.",
     "status": "success"
 }
 ```
@@ -59,14 +53,18 @@ If an error occurs, the API returns:
 
 This BFF integrates with:
 
-1. `iss_api_get_last_stored_loc`:
-   - Provides the most recent ISS location
+1. `iss_api_query_loc_history`:
+   - Provides the most recent ISS location (with limit=1)
    - Returns coordinates and location name
 
 2. `iss_api_get_loc_fact`:
    - Generates location-based facts
    - Uses configurable prompts from GCS
    - Falls back to default prompt if needed
+
+## Related Functions
+
+- `iss_api_bff_web_predictions`: Handles ISS location predictions (current and historical)
 
 ## Authentication
 
@@ -126,10 +124,10 @@ The function provides detailed error handling for:
 
 ## Performance
 
-- Implements response caching
-- Uses concurrent requests where possible
-- Optimizes payload size
-- Provides data freshness indicators
+- HTTP connection pooling for external API calls
+- API key caching (5 minutes) to reduce Secret Manager calls
+- Client reuse for Secret Manager
+- Optimized payload size
 
 ## Security
 

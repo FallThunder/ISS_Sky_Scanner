@@ -277,36 +277,111 @@ class LocationHistoryManager {
         return filledHistory;
     }
 
-    // Get combined history and predictions for the full 48-hour range
-    // Returns one entry per source timestamp, with predictions grouped by source
-    getAllLocations() {
+    // Fill gaps in predictions with placeholder entries for missing time slots (90 minutes ahead)
+    fillGapsInPredictions() {
         const filledHistory = this.fillGapsInHistory();
-        const allLocations = [...filledHistory];
+        if (filledHistory.length === 0) {
+            return [];
+        }
         
-        // Add one entry per source timestamp (not per prediction)
+        // Get the current time (newest history entry, which is the last in filledHistory)
+        const currentTimeEntry = filledHistory[filledHistory.length - 1];
+        if (!currentTimeEntry || !currentTimeEntry.timestamp) {
+            return [];
+        }
+        
+        const currentTime = new Date(currentTimeEntry.timestamp);
+        // Round current time to nearest 5 minutes
+        const currentMinutes = Math.round(currentTime.getMinutes() / 5) * 5;
+        const roundedCurrentTime = new Date(currentTime);
+        roundedCurrentTime.setMinutes(currentMinutes);
+        roundedCurrentTime.setSeconds(0);
+        roundedCurrentTime.setMilliseconds(0);
+        
+        // Calculate end time (90 minutes after current, rounded to 5-minute interval)
+        const endTime = new Date(roundedCurrentTime.getTime() + (90 * 60 * 1000));
+        const endMinutes = Math.round(endTime.getMinutes() / 5) * 5;
+        const roundedEndTime = new Date(endTime);
+        roundedEndTime.setMinutes(endMinutes);
+        roundedEndTime.setSeconds(0);
+        roundedEndTime.setMilliseconds(0);
+        
+        // Create a map of existing predictions by predicted timestamp (rounded to 5-minute intervals)
+        // We need to find the best matching prediction for each time slot
+        const predictionMap = new Map();
         if (this.predictionsBySource) {
-            const sourceTimestamps = Object.keys(this.predictionsBySource).sort((a, b) => {
-                return new Date(a) - new Date(b);
-            });
-            
-            sourceTimestamps.forEach(sourceTs => {
+            Object.keys(this.predictionsBySource).forEach(sourceTs => {
                 const predictions = this.predictionsBySource[sourceTs];
                 if (predictions && predictions.length > 0) {
-                    // Create a grouped entry with all predictions for this source timestamp
-                    allLocations.push({
-                        timestamp: sourceTs,
-                        latitude: predictions[0].latitude, // Use first prediction's location as representative
-                        longitude: predictions[0].longitude,
-                        isPredicted: true,
-                        isPredictionGroup: true, // Flag to indicate this is a prediction group
-                        predictions: predictions // Store all predictions for this source timestamp
+                    // For each prediction, map it by its predicted timestamp
+                    predictions.forEach(pred => {
+                        const predTime = new Date(pred.timestamp);
+                        const roundedMinutes = Math.round(predTime.getMinutes() / 5) * 5;
+                        const roundedTime = new Date(predTime);
+                        roundedTime.setMinutes(roundedMinutes);
+                        roundedTime.setSeconds(0);
+                        roundedTime.setMilliseconds(0);
+                        const key = roundedTime.getTime();
+                        
+                        // Store prediction group entry (one per source timestamp)
+                        // If multiple predictions exist for the same rounded timestamp, keep the first one
+                        if (!predictionMap.has(key)) {
+                            predictionMap.set(key, {
+                                timestamp: pred.timestamp,
+                                latitude: pred.latitude,
+                                longitude: pred.longitude,
+                                isPredicted: true,
+                                isPredictionGroup: true,
+                                predictions: predictions, // Store all predictions for this source timestamp
+                                source_timestamp: sourceTs
+                            });
+                        }
                     });
                 }
             });
         }
         
+        // Generate filled array with placeholders for missing prediction slots
+        const filledPredictions = [];
+        const fiveMinutes = 5 * 60 * 1000; // 5 minutes in milliseconds
+        
+        // Start from current time + 5 minutes and go forward to end time (inclusive)
+        // We start at +5 minutes because current time is already in history
+        for (let time = roundedCurrentTime.getTime() + fiveMinutes; time <= roundedEndTime.getTime(); time += fiveMinutes) {
+            const roundedTime = new Date(time);
+            const key = roundedTime.getTime();
+            
+            if (predictionMap.has(key)) {
+                // Use existing prediction
+                filledPredictions.push(predictionMap.get(key));
+            } else {
+                // Create placeholder entry
+                filledPredictions.push({
+                    timestamp: roundedTime.toISOString(),
+                    isEmpty: true,
+                    latitude: null,
+                    longitude: null,
+                    location: null,
+                    isPredicted: true
+                });
+            }
+        }
+        
+        return filledPredictions;
+    }
+
+    // Get combined history and predictions for the full 48-hour range
+    // Returns filled history + filled predictions (one entry per 5-minute interval)
+    getAllLocations() {
+        const filledHistory = this.fillGapsInHistory();
+        const allLocations = [...filledHistory];
+        
+        // Add filled predictions (with placeholders for gaps)
+        const filledPredictions = this.fillGapsInPredictions();
+        allLocations.push(...filledPredictions);
+        
         console.log('getAllLocations - History:', filledHistory.length, 
-            'Prediction groups:', Object.keys(this.predictionsBySource || {}).length,
+            'Prediction slots:', filledPredictions.length,
             'Total:', allLocations.length);
         
         return allLocations;

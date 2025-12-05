@@ -113,6 +113,12 @@ async function init() {
     await fetchISSData();
     console.log('init: Initialization complete');
     
+    // Fetch predictions in background (already called in fetchISSData, but ensure it's called)
+    // This ensures predictions load even if fetchISSData completes before predictions API responds
+    fetchPredictionsData().catch(err => {
+        console.error('Background predictions fetch failed:', err);
+    });
+    
     startAutoRefresh();
 }
 
@@ -491,6 +497,11 @@ async function fetchISSDataWithRetry() {
         
         // Reset fetching flag before scheduling next auto-refresh
         isFetching = false;
+        
+        // Fetch predictions in the background (don't wait for it)
+        fetchPredictionsData().catch(err => {
+            console.error('Background predictions fetch failed:', err);
+        });
         
         // Schedule next auto-refresh
         startAutoRefresh();
@@ -944,27 +955,8 @@ function updateUI(data) {
             return historySlider.getCurrentSliderInfo();
         });
 
-        if (data.predictions) {
-            console.log('updateUI: Setting predictions from API...');
-            locationHistory.setPredictionsFromAPI(data.predictions);
-            const predictions = locationHistory.predictions;
-            console.log('updateUI: Predictions set, count:', predictions.length);
-        } else {
-            console.log('updateUI: No predictions in API response');
-            locationHistory.setPredictionsFromAPI(null);
-        }
-        
-        // Store historical predictions for metrics page
-        // Set to null initially to indicate API response received (even if no predictions)
-        if (typeof window !== 'undefined') {
-            window.historicalPredictions = data.historical_predictions || null;
-            console.log('updateUI: Storing historical predictions for metrics:', data.historical_predictions ? 'present' : 'null');
-            
-            // Trigger metrics update if metrics page is already initialized
-            if (typeof window !== 'undefined' && window.updateMetricsGraphs) {
-                window.updateMetricsGraphs();
-            }
-        }
+        // Predictions are now loaded separately via fetchPredictionsData()
+        // No need to process predictions here
 
         if (historySlider) {
         historySlider.updateSliderRange();
@@ -991,10 +983,18 @@ function updateUI(data) {
             longitude: data.longitude
         };
         currentISSLocation = currentLocation;
-        drawPredictionPathsFromAPI(currentLocation, data.predictions);
         
-        // Hide loading animation now that predictions are ready
-        hidePredictionsLoading();
+        // Predictions paths will be drawn when predictions are loaded via fetchPredictionsData()
+        // If predictions are already loaded, draw them now
+        const predictions = locationHistory.predictions;
+        if (predictions && predictions.length > 0) {
+            // Get predictions data structure
+            const predictionsData = {
+                orbital_mechanics: locationHistory.predictions.filter(p => p.method !== 'sgp4'),
+                sgp4: locationHistory.predictions.filter(p => p.method === 'sgp4')
+            };
+            drawPredictionPathsFromAPI(currentLocation, predictionsData);
+        }
 
         // Update text displays
         coordinates.textContent = `${formatCoordinates(parseFloat(data.latitude), parseFloat(data.longitude))}${data.location ? `\n\n${data.location}` : ''}`;
@@ -1110,6 +1110,59 @@ function hideNoDataMessage() {
     }
 }
 
+// Fetch predictions data separately
+async function fetchPredictionsData() {
+    try {
+        console.log('fetchPredictionsData: Starting fetch...');
+        const response = await fetch(`${config.PREDICTIONS_API_URL}?api_key=${config.API_KEY}`);
+        console.log('fetchPredictionsData: Response received, status:', response.status);
+        
+        if (!response.ok) {
+            throw new Error(`Predictions API returned ${response.status}`);
+        }
+        
+        const data = await response.json();
+        console.log('fetchPredictionsData: Data parsed');
+        
+        if (data.status === 'success' && data.predictions) {
+            console.log('fetchPredictionsData: Setting predictions from API...');
+            locationHistory.setPredictionsFromAPI(data.predictions);
+            
+            // Store historical predictions for metrics page
+            if (typeof window !== 'undefined') {
+                window.historicalPredictions = data.historical_predictions || null;
+                console.log('fetchPredictionsData: Storing historical predictions for metrics:', data.historical_predictions ? 'present' : 'null');
+                
+                // Trigger metrics update if metrics page is already initialized
+                if (typeof window !== 'undefined' && window.updateMetricsGraphs) {
+                    window.updateMetricsGraphs();
+                }
+            }
+            
+            // Update prediction paths if current location is loaded
+            if (currentISSLocation) {
+                drawPredictionPathsFromAPI(currentISSLocation, data.predictions);
+            }
+            
+            // Hide loading animation now that predictions are ready
+            hidePredictionsLoading();
+            
+            console.log('fetchPredictionsData: Completed successfully');
+        } else {
+            console.warn('fetchPredictionsData: No predictions data in response');
+            locationHistory.setPredictionsFromAPI(null);
+            hidePredictionsLoading();
+        }
+        
+    } catch (error) {
+        console.error('fetchPredictionsData: Error caught:', error);
+        console.error('fetchPredictionsData: Error stack:', error.stack);
+        // Don't show error to user for predictions - it's background loading
+        locationHistory.setPredictionsFromAPI(null);
+        hidePredictionsLoading();
+    }
+}
+
 // Fetch ISS data (initial load)
 async function fetchISSData() {
     try {
@@ -1123,7 +1176,6 @@ async function fetchISSData() {
         
         const data = await response.json();
         console.log('fetchISSData: Data parsed, calling updateUI...');
-        console.log('fetchISSData: Data has predictions?', !!data.predictions);
         
         isCurrentLocationLoaded = true;
         lastDataTimestamp = data.timestamp;
@@ -1144,6 +1196,11 @@ async function fetchISSData() {
         
         document.getElementById('error').style.display = 'none';
         console.log('fetchISSData: Completed successfully');
+        
+        // Fetch predictions in the background (don't wait for it)
+        fetchPredictionsData().catch(err => {
+            console.error('Background predictions fetch failed:', err);
+        });
         
     } catch (error) {
         console.error('fetchISSData: Error caught:', error);

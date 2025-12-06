@@ -224,8 +224,8 @@ class LocationHistoryManager {
         }
         
         const newestTime = new Date(newestLocation.timestamp);
-        // Round newest time to nearest 5 minutes
-        const newestMinutes = Math.round(newestTime.getMinutes() / 5) * 5;
+        // Round newest time to nearest 5 minutes (using floor for consistency with roundTimestampTo5Minutes)
+        const newestMinutes = Math.floor(newestTime.getMinutes() / 5) * 5;
         const roundedNewestTime = new Date(newestTime);
         roundedNewestTime.setMinutes(newestMinutes);
         roundedNewestTime.setSeconds(0);
@@ -233,18 +233,19 @@ class LocationHistoryManager {
         
         // Calculate oldest time (24 hours before newest, rounded to 5-minute interval)
         const oldestTime = new Date(roundedNewestTime.getTime() - (24 * 60 * 60 * 1000));
-        const oldestMinutes = Math.round(oldestTime.getMinutes() / 5) * 5;
+        const oldestMinutes = Math.floor(oldestTime.getMinutes() / 5) * 5;
         const roundedOldestTime = new Date(oldestTime);
         roundedOldestTime.setMinutes(oldestMinutes);
         roundedOldestTime.setSeconds(0);
         roundedOldestTime.setMilliseconds(0);
         
         // Create a map of existing locations by rounded timestamp (5-minute intervals)
+        // Use the same rounding method as roundTimestampTo5Minutes() for consistency
         const locationMap = new Map();
         this.locations.forEach(loc => {
             const locTime = new Date(loc.timestamp);
-            // Round to nearest 5 minutes
-            const roundedMinutes = Math.round(locTime.getMinutes() / 5) * 5;
+            // Round to nearest 5 minutes (using floor to match roundTimestampTo5Minutes)
+            const roundedMinutes = Math.floor(locTime.getMinutes() / 5) * 5;
             const roundedTime = new Date(locTime);
             roundedTime.setMinutes(roundedMinutes);
             roundedTime.setSeconds(0);

@@ -629,14 +629,15 @@ function updateMapFromHistory(location) {
     const locationTime = new Date(location.timestamp);
     const isFuture = locationTime > now;
     
-    // If this is a prediction, don't create a marker - predictions are shown via updatePredictionDisplay()
+    // If this is a prediction, create temporary markers like historical positions do
     if (isPrediction || isFuture) {
-        console.log('updateMapFromHistory - Skipping marker creation for prediction (handled by updatePredictionDisplay)');
-        // Remove any existing markers
+        console.log('updateMapFromHistory - Handling prediction selection');
+        
+        // Remove any existing ISS markers
         if (issMarker) {
             if (Array.isArray(issMarker)) {
                 issMarker.forEach(marker => {
-            map.removeLayer(marker);
+                    map.removeLayer(marker);
                     if (marker.uncertaintyCircles) {
                         marker.uncertaintyCircles.forEach(circle => map.removeLayer(circle));
                     }
@@ -648,8 +649,60 @@ function updateMapFromHistory(location) {
                 }
             }
         }
-        issMarker = null;
-        return; // Don't create markers for predictions
+        
+        // Calculate minutes ahead
+        const minutesAhead = Math.round((locationTime - now) / (1000 * 60));
+        
+        // Create popup content with minutes ahead info
+        const popupContent = `<b>Predicted Location:</b><br>${formatCoordinates(lat, lon)}<br><small>${minutesAhead} minutes ahead</small>`;
+        
+        // Create temporary markers for predictions (same approach as historical positions)
+        const predictionDotIcon = L.divIcon({
+            className: 'prediction-dot-icon',
+            html: '<div style="background-color: #FF6B6B; width: 10px; height: 10px; border-radius: 50%; border: 1px solid white;"></div>',
+            iconSize: [12, 12],
+            iconAnchor: [6, 6],
+            popupAnchor: [0, -6]
+        });
+        
+        // Get map bounds
+        const bounds = map.getBounds();
+        const west = bounds.getWest();
+        const east = bounds.getEast();
+        const center = bounds.getCenter();
+        
+        // Calculate base longitude that's west of the current view with extra buffer
+        let baseLon = lon;
+        while (baseLon > west - 360) baseLon -= 360;
+        
+        // Create array to hold temporary markers
+        issMarker = [];
+        
+        // Add markers for all visible longitudes with extra buffer (same as historical positions)
+        for (let currLon = baseLon; currLon <= east + 720; currLon += 360) {
+            const marker = L.marker([lat, currLon], { icon: predictionDotIcon }).addTo(map);
+            marker.bindPopup(popupContent);
+            issMarker.push(marker);
+        }
+        
+        // Find the closest marker to center for panning
+        let targetLng = lon;
+        while (targetLng < center.lng - 180) targetLng += 360;
+        while (targetLng > center.lng + 180) targetLng -= 360;
+        
+        map.panTo([lat, targetLng]);
+        
+        // Open popup on the marker closest to center (same as historical positions)
+        if (issMarker.length > 0) {
+            const closestMarker = issMarker.reduce((prev, curr) => {
+                const prevDist = Math.abs(prev.getLatLng().lng - center.lng);
+                const currDist = Math.abs(curr.getLatLng().lng - center.lng);
+                return currDist < prevDist ? curr : prev;
+            });
+            closestMarker.openPopup();
+        }
+        
+        return; // Don't create ISS icon markers for predictions
     }
     
     // Use ISS icon for historical/current locations only
@@ -893,6 +946,7 @@ function updatePredictionDisplay() {
     
     // Create clickable markers for each prediction centroid point
     // These markers show lat/long info when clicked
+    // Create markers for all world copies (like ISS icon and paths)
     const predictionDotIcon = L.divIcon({
         className: 'prediction-dot-icon',
         html: '<div style="background-color: #FF6B6B; width: 10px; height: 10px; border-radius: 50%; border: 1px solid white;"></div>',
@@ -900,12 +954,36 @@ function updatePredictionDisplay() {
         iconAnchor: [6, 6]
     });
     
-    // Create markers for each centroid point (only for the main world copy, not all copies)
-    centroidPoints.forEach(([lat, lon]) => {
-        const marker = L.marker([lat, lon], { icon: predictionDotIcon }).addTo(map);
-        const popupContent = `<b>Predicted Location:</b><br>${formatCoordinates(lat, lon)}`;
-        marker.bindPopup(popupContent);
-        predictionMarkers.push(marker);
+    // Create markers for each centroid point for all world copies
+    const currentTime = new Date();
+    centroidPoints.forEach(([lat, lon], index) => {
+        // Calculate minutes ahead for this prediction
+        // Match the centroid to the corresponding future prediction by index
+        let minutesAhead = null;
+        if (futurePredictions.length > index) {
+            const predTime = new Date(futurePredictions[index].timestamp);
+            minutesAhead = Math.round((predTime - currentTime) / (1000 * 60));
+        }
+        
+        // Create popup content with minutes ahead info
+        let popupContent = `<b>Predicted Location:</b><br>${formatCoordinates(lat, lon)}`;
+        if (minutesAhead !== null) {
+            popupContent += `<br><small>${minutesAhead} minutes ahead</small>`;
+        }
+        
+        // Calculate base longitude that's west of the current view with extra buffer
+        let baseLon = lon;
+        while (baseLon > west - 360) baseLon -= 360;
+        
+        // Create markers for all visible longitudes with extra buffer (same as ISS icon)
+        for (let currLon = baseLon; currLon <= east + 720; currLon += 360) {
+            const marker = L.marker([lat, currLon], { icon: predictionDotIcon }).addTo(map);
+            marker.bindPopup(popupContent);
+            // Store the original lat/lon for matching in updateMapFromHistory
+            marker._originalLatLng = L.latLng(lat, lon);
+            marker._minutesAhead = minutesAhead;
+            predictionMarkers.push(marker);
+        }
     });
     
     console.log(`updatePredictionDisplay: Displayed ${predictionPath.length} prediction paths with ${centroidPoints.length} points and ${predictionMarkers.length} markers`);

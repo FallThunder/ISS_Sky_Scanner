@@ -10,6 +10,8 @@ let map = null;
 let issMarker = null;
 let currentISSLocation = null;
 let isCurrentLocationLoaded = false;
+let isLocationsLoaded = false;
+let isPredictionsLoaded = false;
 
 // Prediction display variables
 let predictionPath = []; // Array of polylines for world copies
@@ -33,15 +35,64 @@ if (typeof window !== 'undefined') {
 }
 let historySlider = null;
 
+// Slider loading state management (using same pattern as predictions loading)
+function showSliderLoading() {
+    const loadingElement = document.getElementById('slider-loading');
+    const sliderContainer = document.getElementById('slider-container');
+    if (loadingElement && sliderContainer) {
+        loadingElement.classList.remove('hidden');
+        loadingElement.classList.remove('fade-out');
+        sliderContainer.style.display = 'none';
+    }
+}
+
+function hideSliderLoading() {
+    const loadingElement = document.getElementById('slider-loading');
+    const spinner = document.getElementById('slider-loading-spinner');
+    const checkmark = document.getElementById('slider-loading-checkmark');
+    const loadingText = document.getElementById('slider-loading-text');
+    const sliderContainer = document.getElementById('slider-container');
+    
+    if (loadingElement && spinner && checkmark && loadingText && sliderContainer) {
+        spinner.style.display = 'none';
+        checkmark.style.display = 'flex';
+        loadingText.textContent = 'Timeline ready!';
+        
+        setTimeout(() => {
+            loadingElement.classList.add('fade-out');
+            setTimeout(() => {
+                loadingElement.classList.add('hidden');
+                sliderContainer.style.display = 'block';
+            }, 800);
+        }, 900);
+    }
+}
+
+function checkSliderReady() {
+    if (isLocationsLoaded && isPredictionsLoaded) {
+        hideSliderLoading();
+    }
+}
+
 // Initialize the application
 async function init() {
     console.log('init: Starting initialization...');
     initMap();
     initializeLegendToggle();
     
+    // Show slider loading state
+    showSliderLoading();
+    
     console.log('init: Initializing location history...');
     await locationHistory.initializeHistory();
-    console.log('init: Location history initialized, count:', locationHistory.getLocations().length);
+    const historyCount = locationHistory.getLocations().length;
+    console.log('init: Location history initialized, count:', historyCount);
+    
+    // Mark locations as loaded if we have history data
+    if (historyCount > 0) {
+        isLocationsLoaded = true;
+        checkSliderReady();
+    }
     
     console.log('init: Creating history slider...');
     historySlider = new HistorySlider(locationHistory, updateMapFromHistory);
@@ -1042,6 +1093,10 @@ function updateUI(data) {
             console.warn('updateUI: historySlider not initialized, skipping slider updates');
         }
         
+        // Mark locations as loaded
+        isLocationsLoaded = true;
+        checkSliderReady();
+        
         
         const currentLocation = {
             timestamp: data.timestamp,
@@ -1202,12 +1257,20 @@ async function fetchPredictionsData() {
                     // Update prediction display on map
                     updatePredictionDisplay();
                     
+                    // Mark predictions as loaded
+                    isPredictionsLoaded = true;
+                    checkSliderReady();
+                    
                     console.log('fetchPredictionsData: Completed successfully');
         } else {
             console.warn('fetchPredictionsData: No predictions data in response');
             locationHistory.setPredictionsFromAPI(null);
             // Clear prediction display if no predictions
             updatePredictionDisplay();
+            
+            // Mark predictions as loaded even if empty (so slider can show)
+            isPredictionsLoaded = true;
+            checkSliderReady();
         }
         
     } catch (error) {
@@ -1217,6 +1280,10 @@ async function fetchPredictionsData() {
                 locationHistory.setPredictionsFromAPI(null);
                 // Clear prediction display on error
                 updatePredictionDisplay();
+                
+                // Mark predictions as loaded even on error (so slider can show)
+                isPredictionsLoaded = true;
+                checkSliderReady();
     }
 }
 
@@ -1253,6 +1320,10 @@ async function fetchISSData() {
         } else {
             console.warn('fetchISSData: historySlider not initialized, skipping slider updates');
         }
+        
+        // Mark locations as loaded
+        isLocationsLoaded = true;
+        checkSliderReady();
         
         document.getElementById('error').style.display = 'none';
         console.log('fetchISSData: Completed successfully');

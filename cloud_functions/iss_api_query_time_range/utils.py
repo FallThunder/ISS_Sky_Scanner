@@ -42,12 +42,28 @@ def query_time_range(minutes: int = 60) -> List[Dict[str, Any]]:
         results = []
         for doc in docs:
             data = doc.to_dict()
-            results.append({
-                'timestamp': data['timestamp'],
-                'latitude': data['latitude'],
-                'longitude': data['longitude'],
-                'location': data.get('location', '')  # Using get() with default empty string
-            })
+            
+            # Check if this is an error entry
+            is_error_entry = data.get('is_error_entry', False)
+            
+            # If it's an error entry, ensure isEmpty is set to True
+            if is_error_entry:
+                results.append({
+                    'timestamp': data['timestamp'],
+                    'latitude': None,
+                    'longitude': None,
+                    'location': None,
+                    'isEmpty': True
+                })
+            else:
+                # Regular location entry
+                results.append({
+                    'timestamp': data['timestamp'],
+                    'latitude': data.get('latitude'),
+                    'longitude': data.get('longitude'),
+                    'location': data.get('location', ''),
+                    'isEmpty': data.get('isEmpty', False)
+                })
             
         logger.info(f"Found {len(results)} records in the last {minutes} minutes")
         return results

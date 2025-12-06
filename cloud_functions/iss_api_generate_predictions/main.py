@@ -14,6 +14,9 @@ def iss_api_generate_predictions(request):
     HTTP Cloud Function to generate ISS position predictions.
     This is an internal API meant to be called only by other APIs in this project.
     
+    Authentication is handled automatically by GCP for 2nd gen functions
+    when deployed with --no-allow-unauthenticated.
+    
     Expected JSON body:
     {
         "timestamp": "2024-01-15T15:00:00Z",

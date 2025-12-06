@@ -885,7 +885,12 @@ function updatePredictionDisplay() {
         while (centroidLon < -180) centroidLon += 360;
         
         const centroidLat = sumLat / points.length;
-        centroidPoints.push([centroidLat, centroidLon]);
+        // Store centroid with its timestamp for matching predictions
+        centroidPoints.push({
+            lat: centroidLat,
+            lon: centroidLon,
+            timestamp: parseFloat(timestampKey)
+        });
     });
     
     if (centroidPoints.length === 0) {
@@ -923,7 +928,9 @@ function updatePredictionDisplay() {
         return normalized;
     };
     
-    const normalizedPoints = normalizeLongitudePath(centroidPoints);
+    // Extract just the [lat, lon] pairs for path normalization
+    const centroidCoords = centroidPoints.map(cp => [cp.lat, cp.lon]);
+    const normalizedPoints = normalizeLongitudePath(centroidCoords);
     
     // Create polylines for world copies (similar to metrics page)
     const bounds = map.getBounds();
@@ -956,12 +963,26 @@ function updatePredictionDisplay() {
     
     // Create markers for each centroid point for all world copies
     const currentTime = new Date();
-    centroidPoints.forEach(([lat, lon], index) => {
-        // Calculate minutes ahead for this prediction
-        // Match the centroid to the corresponding future prediction by index
+    centroidPoints.forEach((centroid, index) => {
+        const lat = centroid.lat;
+        const lon = centroid.lon;
+        const centroidTimestamp = centroid.timestamp;
+        
+        // Match the centroid to the corresponding future prediction by timestamp
+        // Find a prediction that matches this centroid's rounded timestamp
         let minutesAhead = null;
-        if (futurePredictions.length > index) {
-            const predTime = new Date(futurePredictions[index].timestamp);
+        const matchingPrediction = futurePredictions.find(pred => {
+            const predTime = new Date(pred.timestamp);
+            const roundedMinutes = Math.round(predTime.getMinutes() / 5) * 5;
+            const roundedTime = new Date(predTime);
+            roundedTime.setMinutes(roundedMinutes);
+            roundedTime.setSeconds(0);
+            roundedTime.setMilliseconds(0);
+            return roundedTime.getTime() === centroidTimestamp;
+        });
+        
+        if (matchingPrediction) {
+            const predTime = new Date(matchingPrediction.timestamp);
             minutesAhead = Math.round((predTime - currentTime) / (1000 * 60));
         }
         

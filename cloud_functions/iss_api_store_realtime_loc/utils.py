@@ -1,5 +1,5 @@
 import requests
-from typing import Dict, Any, OrderedDict
+from typing import Dict, Any, OrderedDict, Tuple
 import logging
 from google.cloud import firestore
 from google.auth.transport.requests import Request
@@ -21,6 +21,54 @@ except Exception as e:
 
 collection_name = 'iss_loc_history'
 
+def classify_error(error: Exception, error_source: str) -> Tuple[str, str]:
+    """
+    Classifies an error into a category and extracts error message.
+    
+    Args:
+        error: The exception that occurred
+        error_source: Where the error occurred (e.g., "iss_api_get_realtime_loc", "reverse_geocode", "firestore")
+    
+    Returns:
+        Tuple of (error_type, error_message)
+    """
+    error_str = str(error).lower()
+    error_message = str(error)
+    
+    # Check for timeout errors
+    if 'timeout' in error_str or 'timed out' in error_str:
+        return ('timeout', error_message)
+    
+    # Check for HTTP/API errors
+    if isinstance(error, requests.exceptions.HTTPError):
+        return ('api_failure', error_message)
+    if isinstance(error, requests.exceptions.RequestException):
+        return ('api_failure', error_message)
+    
+    # Check for geocoding errors (if error_source indicates it)
+    if error_source == 'reverse_geocode':
+        return ('geocoding_failure', error_message)
+    
+    # Check for Firestore errors
+    if 'firestore' in error_str or error_source == 'firestore':
+        return ('firestore_error', error_message)
+    
+    # Default to unknown
+    return ('unknown', error_message)
+
+def round_timestamp_to_5_minutes(dt: datetime) -> datetime:
+    """
+    Rounds a datetime to the nearest 5-minute interval (floor).
+    
+    Args:
+        dt: Datetime to round
+    
+    Returns:
+        Rounded datetime
+    """
+    rounded_minutes = (dt.minute // 5) * 5
+    return dt.replace(minute=rounded_minutes, second=0, microsecond=0)
+
 def get_id_token(target_audience: str = None) -> str:
     """
     Gets an ID token for authenticating with other Cloud Functions.
@@ -29,18 +77,19 @@ def get_id_token(target_audience: str = None) -> str:
         target_audience: URL of the target Cloud Function. If None, uses default.
     """
     try:
-        logger.info("Getting ID token...")
+        logger.info(f"Getting ID token for audience: {target_audience}")
         # Get credentials from the environment
         credentials, project = google.auth.default()
         logger.info(f"Got credentials for project: {project}")
         
         # Request a token with the target audience
+        auth_req = Request()
         if target_audience is None:
             target_audience = 'https://iss-api-get-realtime-loc-cklav7ht2q-ue.a.run.app'
-            auth_req = Request()
-            token = id_token.fetch_id_token(auth_req, target_audience)
-            logger.info("Successfully obtained ID token")
-            return token
+        
+        token = id_token.fetch_id_token(auth_req, target_audience)
+        logger.info(f"Successfully obtained ID token for {target_audience}")
+        return token
     except Exception as e:
         logger.error(f"Error getting ID token: {str(e)}")
         raise
@@ -73,6 +122,48 @@ def get_iss_location() -> Dict[str, Any]:
         logger.error(f"Error fetching ISS location: {str(e)}")
         return {'error': f'Failed to fetch ISS location: {str(e)}'}
 
+def store_error_entry(error: Exception, error_source: str) -> None:
+    """
+    Stores an error entry in Firestore when location fetch/store fails.
+    
+    Args:
+        error: The exception that occurred
+        error_source: Where the error occurred (e.g., "iss_api_get_realtime_loc", "firestore")
+    """
+    try:
+        # Classify the error
+        error_type, error_message = classify_error(error, error_source)
+        
+        # Get current time and round to 5-minute interval
+        current_time = datetime.now(timezone.utc)
+        rounded_time = round_timestamp_to_5_minutes(current_time)
+        iso_timestamp = rounded_time.isoformat()
+        
+        # Prepare error document
+        error_doc = OrderedDict([
+            ('timestamp', iso_timestamp),
+            ('is_error_entry', True),
+            ('error_type', error_type),
+            ('error_message', error_message),
+            ('error_source', error_source),
+            ('isEmpty', True),
+            ('latitude', None),
+            ('longitude', None),
+            ('location', None),
+            ('country_code', '')
+        ])
+        
+        # Store error entry in Firestore
+        logger.info(f"Storing error entry in collection: {collection_name}")
+        doc_ref = db.collection(collection_name).document()
+        doc_ref.set(dict(error_doc))
+        
+        logger.info(f"Successfully stored error entry with ID: {doc_ref.id}, type: {error_type}, source: {error_source}")
+        
+    except Exception as e:
+        # If storing error entry fails, log it but don't raise (to avoid infinite loop)
+        logger.error(f"Failed to store error entry: {str(e)}")
+
 def store_iss_location() -> Dict[str, Any]:
     """
     Fetches current ISS location and stores it in Firestore.
@@ -85,19 +176,32 @@ def store_iss_location() -> Dict[str, Any]:
         location_data = get_iss_location()
         if location_data.get('error'):
             logger.error(f"Error in get_iss_location: {location_data['error']}")
+            # Store error entry in Firestore
+            error = Exception(location_data['error'])
+            store_error_entry(error, 'iss_api_get_realtime_loc')
             return location_data
 
         logger.info("Preparing document data...")
         # Convert Unix timestamp to ISO format
         iso_timestamp = datetime.fromtimestamp(location_data['timestamp'], tz=timezone.utc).isoformat()
         
+        # Handle location_details - it might be a dict or a string
+        location_details = location_data.get('location_details', {})
+        if isinstance(location_details, dict):
+            location_name = location_details.get('location_name', 'Location details unavailable')
+            country_code = location_details.get('country_code', '')
+        else:
+            # If location_details is a string (e.g., 'Location details unavailable')
+            location_name = location_details if isinstance(location_details, str) else 'Location details unavailable'
+            country_code = ''
+        
         # Prepare document data with ordered fields
         doc_data = OrderedDict([
             ('timestamp', iso_timestamp),
             ('latitude', location_data['latitude']),
             ('longitude', location_data['longitude']),
-            ('location', location_data['location_details']['location_name']),
-            ('country_code', location_data['location_details'].get('country_code', ''))  # Add country code
+            ('location', location_name),
+            ('country_code', country_code)
         ])
 
         # Store in Firestore
@@ -113,6 +217,8 @@ def store_iss_location() -> Dict[str, Any]:
     except Exception as e:
         error_msg = f"Error storing ISS location: {str(e)}"
         logger.error(error_msg)
+        # Store error entry in Firestore
+        store_error_entry(e, 'firestore')
         return {'error': error_msg}
 
 

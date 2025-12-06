@@ -33,7 +33,10 @@ function initMetricsPage() {
     initMetricsGraphs();
     initGraphSelector();
     initMetricsLegendToggle();
-    updateGraphsWithHistoricalData();
+    // Add a small delay to ensure locationHistory is available
+    setTimeout(() => {
+        updateGraphsWithHistoricalData();
+    }, 300);
 }
 
 /**
@@ -228,11 +231,31 @@ function initMetricsGraphs() {
                                 return context.dataset.label + ': ' + value + '°';
                             },
                             afterBody: function(context) {
-                                // Show timestamp below the value
+                                // Show local time and UTC timestamp below the value
                                 const dataPoint = context[0].raw;
                                 if (dataPoint && typeof dataPoint === 'object' && dataPoint.timestamp) {
                                     const timestamp = new Date(dataPoint.timestamp);
-                                    return 'Timestamp: ' + timestamp.toISOString();
+                                    const localTime = timestamp.toLocaleString('en-US', {
+                                        year: 'numeric',
+                                        month: 'short',
+                                        day: 'numeric',
+                                        hour: 'numeric',
+                                        minute: '2-digit',
+                                        second: '2-digit',
+                                        hour12: true,
+                                        timeZoneName: 'short'
+                                    });
+                                    const utcTime = timestamp.toLocaleString('en-US', {
+                                        year: 'numeric',
+                                        month: 'short',
+                                        day: 'numeric',
+                                        hour: 'numeric',
+                                        minute: '2-digit',
+                                        second: '2-digit',
+                                        hour12: true,
+                                        timeZone: 'UTC'
+                                    }) + ' UTC';
+                                    return `Local time: ${localTime}\nUTC: ${utcTime}`;
                                 }
                                 return '';
                             }
@@ -352,11 +375,31 @@ function initMetricsGraphs() {
                                 return context.dataset.label + ': ' + value + '°';
                             },
                             afterBody: function(context) {
-                                // Show timestamp below the value
+                                // Show local time and UTC timestamp below the value
                                 const dataPoint = context[0].raw;
                                 if (dataPoint && typeof dataPoint === 'object' && dataPoint.timestamp) {
                                     const timestamp = new Date(dataPoint.timestamp);
-                                    return 'Timestamp: ' + timestamp.toISOString();
+                                    const localTime = timestamp.toLocaleString('en-US', {
+                                        year: 'numeric',
+                                        month: 'short',
+                                        day: 'numeric',
+                                        hour: 'numeric',
+                                        minute: '2-digit',
+                                        second: '2-digit',
+                                        hour12: true,
+                                        timeZoneName: 'short'
+                                    });
+                                    const utcTime = timestamp.toLocaleString('en-US', {
+                                        year: 'numeric',
+                                        month: 'short',
+                                        day: 'numeric',
+                                        hour: 'numeric',
+                                        minute: '2-digit',
+                                        second: '2-digit',
+                                        hour12: true,
+                                        timeZone: 'UTC'
+                                    }) + ' UTC';
+                                    return `Local time: ${localTime}\nUTC: ${utcTime}`;
                                 }
                                 return '';
                             }
@@ -456,7 +499,7 @@ function initMetricsLegendToggle() {
     }
     
     updateMetricsLegendVisualState();
-        }
+}
 
 /**
  * Update legend visual state for metrics map
@@ -507,15 +550,39 @@ function updateGraphsWithHistoricalData() {
     try {
         // Get historical locations from locationHistory
         let historicalLocations = [];
+        console.log('[metrics] updateGraphsWithHistoricalData: starting refresh');
         
+        // Try to get data from window.locationHistory first
         if (typeof window !== 'undefined' && window.locationHistory) {
-            historicalLocations = window.locationHistory.getLocations();
-        } else {
-            // Fallback: load directly from sessionStorage
+            try {
+                const locations = window.locationHistory.getLocations();
+                if (locations && Array.isArray(locations) && locations.length > 0) {
+                    historicalLocations = locations;
+                    console.log('[metrics] updateGraphsWithHistoricalData: Retrieved', historicalLocations.length, 'locations from window.locationHistory');
+                } else {
+                    console.warn('[metrics] updateGraphsWithHistoricalData: getLocations() returned empty or invalid data:', locations);
+                    // Fall through to sessionStorage fallback
+                }
+            } catch (error) {
+                console.error('[metrics] updateGraphsWithHistoricalData: Error accessing window.locationHistory:', error);
+                // Fall through to sessionStorage fallback
+            }
+        }
+        
+        // Fallback: load directly from sessionStorage if locationHistory didn't work
+        if (historicalLocations.length === 0) {
+            console.log('[metrics] updateGraphsWithHistoricalData: Trying sessionStorage fallback');
             const stored = sessionStorage.getItem('iss_location_history');
             if (stored) {
-                const allData = JSON.parse(stored);
-                historicalLocations = allData.filter(loc => !loc.isPredicted && !loc.isEmpty);
+                try {
+                    const allData = JSON.parse(stored);
+                    historicalLocations = allData.filter(loc => !loc.isPredicted && !loc.isEmpty);
+                    console.log('[metrics] updateGraphsWithHistoricalData: Retrieved', historicalLocations.length, 'locations from sessionStorage');
+                } catch (error) {
+                    console.error('[metrics] updateGraphsWithHistoricalData: Error parsing sessionStorage data:', error);
+                }
+            } else {
+                console.warn('[metrics] updateGraphsWithHistoricalData: No data in sessionStorage either');
             }
         }
         
@@ -528,11 +595,12 @@ function updateGraphsWithHistoricalData() {
         });
         
         if (validLocations.length === 0) {
-            console.log('No valid historical location data available for metrics');
+            console.log('[metrics] No valid historical location data available for metrics');
             // Clear graphs and map
             clearMetricsDisplay();
             return;
         }
+        console.log('[metrics] validLocations count:', validLocations.length);
         
         // Sort by timestamp (newest first) to find the most recent data point
         const sortedByNewest = [...validLocations].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
@@ -579,10 +647,12 @@ function updateGraphsWithHistoricalData() {
             .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
         
         if (filteredLocations.length === 0) {
-            console.log('No valid historical location data in the last 90 minutes');
+            console.warn('[metrics] No valid historical data in the last 90 minutes; charts will stay empty.');
             clearMetricsDisplay();
             return;
         }
+        console.log('[metrics] filteredLocations (<=90 min) count:', filteredLocations.length);
+        console.log('[metrics] newestTimestamp rounded:', newestTimestamp.toISOString(), 'leftmostTimestamp:', leftmostTimestamp.toISOString());
         
         // Create labels for the graph (minutes from newest, e.g., -90, -85, ..., -5, 0)
         const labels = intervalTimestamps.map((ts) => {
@@ -613,20 +683,30 @@ function updateGraphsWithHistoricalData() {
         // Build data arrays using interval timestamps (store timestamps with data)
         const longitudeData = intervalTimestamps.map(intervalTs => {
             const loc = locationByInterval.get(intervalTs.getTime());
-            return loc ? {
-                x: null, // Chart.js will use index
-                y: parseFloat(loc.longitude),
+            if (loc) {
+                return {
+                    y: parseFloat(loc.longitude),
+                    timestamp: intervalTs.toISOString()
+                };
+            }
+            return {
+                y: null,
                 timestamp: intervalTs.toISOString()
-            } : null;
+            };
         });
         
         const latitudeData = intervalTimestamps.map(intervalTs => {
             const loc = locationByInterval.get(intervalTs.getTime());
-            return loc ? {
-                x: null, // Chart.js will use index
-                y: parseFloat(loc.latitude),
+            if (loc) {
+                return {
+                    y: parseFloat(loc.latitude),
+                    timestamp: intervalTs.toISOString()
+                };
+            }
+            return {
+                y: null,
                 timestamp: intervalTs.toISOString()
-            } : null;
+            };
         });
         
         // Get historical predictions if available
@@ -647,7 +727,7 @@ function updateGraphsWithHistoricalData() {
         const predictions60min = filterPredictionsInRange(historicalPredictions?.predictions_60min_ago || []);
         const predictions30min = filterPredictionsInRange(historicalPredictions?.predictions_30min_ago || []);
         
-        console.log(`Processing predictions for graphs: 90min=${predictions90min.length}, 60min=${predictions60min.length}, 30min=${predictions30min.length}`);
+        console.log(`[metrics] Processing predictions for graphs: 90min=${predictions90min.length}, 60min=${predictions60min.length}, 30min=${predictions30min.length}`);
         
         // Process each prediction set for both latitude and longitude
         const pred90LatData = processPredictionsForGraph(predictions90min, intervalTimestamps, newestTimestamp, false);
@@ -657,11 +737,14 @@ function updateGraphsWithHistoricalData() {
         const pred30LatData = processPredictionsForGraph(predictions30min, intervalTimestamps, newestTimestamp, false);
         const pred30LonData = processPredictionsForGraph(predictions30min, intervalTimestamps, newestTimestamp, true);
         
-        console.log('Prediction data for graphs:', {
-            pred90: { lat: pred90LatData ? `${pred90LatData.filter(v => v !== null).length} points` : 'null', lon: pred90LonData ? `${pred90LonData.filter(v => v !== null).length} points` : 'null' },
-            pred60: { lat: pred60LatData ? `${pred60LatData.filter(v => v !== null).length} points` : 'null', lon: pred60LonData ? `${pred60LonData.filter(v => v !== null).length} points` : 'null' },
-            pred30: { lat: pred30LatData ? `${pred30LatData.filter(v => v !== null).length} points` : 'null', lon: pred30LonData ? `${pred30LonData.filter(v => v !== null).length} points` : 'null' }
-        });
+        const logPredictionData = (label, latData, lonData) => {
+            const latCount = latData ? latData.filter(v => v && v.y !== null).length : 0;
+            const lonCount = lonData ? lonData.filter(v => v && v.y !== null).length : 0;
+            console.log(`[metrics] ${label} prediction points -> lat:${latCount} lon:${lonCount}`);
+        };
+        logPredictionData('90min', pred90LatData, pred90LonData);
+        logPredictionData('60min', pred60LatData, pred60LonData);
+        logPredictionData('30min', pred30LatData, pred30LonData);
         
         // Update graphs with data (including all predictions)
         updateGraphsWithData(labels, latitudeData, longitudeData, 
@@ -700,21 +783,25 @@ function updateGraphsWithHistoricalData() {
  */
 function processPredictionsForGraph(predictions, intervalTimestamps, newestTimestamp, isLongitude) {
             if (!predictions || predictions.length === 0) {
-                return null;
+                return intervalTimestamps.map(intervalTs => ({
+                    y: null,
+                    timestamp: intervalTs.toISOString()
+                }));
             }
             
     // Create a map of predictions by their timestamp (rounded to 5 minutes for matching)
     // Both predictions and intervals are on 5-minute boundaries, so we can match exactly
+    // Use UTC methods to ensure consistency with Firestore timestamps
     const predictionsByRoundedTime = new Map();
     predictions.forEach(pred => {
         const predTime = new Date(pred.timestamp);
-        // Round prediction timestamp to 5-minute interval for matching
-        const predMinutes = predTime.getMinutes();
+        // Round prediction timestamp to 5-minute interval for matching (using UTC)
+        const predMinutes = predTime.getUTCMinutes();
         const roundedMinutes = Math.floor(predMinutes / 5) * 5;
         const roundedPredTime = new Date(predTime);
-        roundedPredTime.setMinutes(roundedMinutes);
-        roundedPredTime.setSeconds(0);
-        roundedPredTime.setMilliseconds(0);
+        roundedPredTime.setUTCMinutes(roundedMinutes);
+        roundedPredTime.setUTCSeconds(0);
+        roundedPredTime.setUTCMilliseconds(0);
         const roundedTimeKey = roundedPredTime.getTime();
         
         // Store prediction with its rounded timestamp as key
@@ -758,24 +845,22 @@ function processPredictionsForGraph(predictions, intervalTimestamps, newestTimes
             matchingPred = closestPred;
                 }
                 
-                if (matchingPred) {
-                    const coordValue = isLongitude ? parseFloat(matchingPred.longitude) : parseFloat(matchingPred.latitude);
+        if (matchingPred) {
+            const coordValue = isLongitude ? parseFloat(matchingPred.longitude) : parseFloat(matchingPred.latitude);
             if (!isNaN(coordValue)) {
-                // Store timestamp from the prediction (use the actual prediction timestamp)
-                // Chart.js will use the y property for the value
-                const dataPoint = {
+                return {
                     y: coordValue,
-                    timestamp: matchingPred.timestamp // Use the actual prediction timestamp
+                    timestamp: matchingPred.timestamp
                 };
-                return dataPoint;
             }
-                }
-                return null;
-            });
-            
-            // Check if we have any valid data points
-            const hasData = predictionData.some(val => val !== null);
-            return hasData ? predictionData : null;
+        }
+        return {
+            y: null,
+            timestamp: intervalTs.toISOString()
+        };
+    });
+    
+    return predictionData;
 }
 
 /**
@@ -1181,7 +1266,10 @@ function handleMetricsViewShown() {
     }
     
     // Refresh graphs with latest data when view is shown
-    updateGraphsWithHistoricalData();
+    // Add a small delay to ensure locationHistory is available
+    setTimeout(() => {
+        updateGraphsWithHistoricalData();
+    }, 200);
 }
 
 // Make updateGraphsWithHistoricalData available globally so main.js can trigger it

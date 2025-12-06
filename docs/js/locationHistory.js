@@ -180,7 +180,49 @@ class LocationHistoryManager {
             });
         }
         
-        // Store grouped predictions
+        // Remove the extra 95-minute endpoint: drop the earliest entry so the window
+        // aligns to the most recent 90-minute span (keeps the latest timestamps).
+        // Collect all predictions with their source group reference
+        const allPredictionsWithSource = [];
+        Object.keys(predictionsBySource).forEach(sourceTs => {
+            predictionsBySource[sourceTs].forEach(pred => {
+                allPredictionsWithSource.push({
+                    prediction: pred,
+                    sourceTimestamp: sourceTs
+                });
+            });
+        });
+        
+        // Sort by timestamp to find the earliest entry
+        allPredictionsWithSource.sort((a, b) => 
+            new Date(a.prediction.timestamp) - new Date(b.prediction.timestamp)
+        );
+        
+        // Remove the earliest entry (shifts range forward by 5 minutes)
+        if (allPredictionsWithSource.length > 0) {
+            const earliestPrediction = allPredictionsWithSource[0];
+            const sourceTs = earliestPrediction.sourceTimestamp;
+            const predToRemove = earliestPrediction.prediction;
+            
+            // Remove the prediction from its source group
+            const sourceGroup = predictionsBySource[sourceTs];
+            if (sourceGroup) {
+                const index = sourceGroup.findIndex(p => 
+                    p.timestamp === predToRemove.timestamp &&
+                    p.latitude === predToRemove.latitude &&
+                    p.longitude === predToRemove.longitude
+                );
+                if (index !== -1) {
+                    sourceGroup.splice(index, 1);
+                }
+                // Remove empty source groups (shouldn't happen, but just in case)
+                if (sourceGroup.length === 0) {
+                    delete predictionsBySource[sourceTs];
+                }
+            }
+        }
+        
+        // Store grouped predictions (now without the 95-minute entry)
         this.predictionsBySource = predictionsBySource;
         
         // Also keep flat array for backward compatibility

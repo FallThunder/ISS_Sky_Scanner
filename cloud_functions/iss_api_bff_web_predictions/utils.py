@@ -296,13 +296,16 @@ def get_historical_predictions() -> Dict[str, List[Dict[str, Any]]]:
     """
     Fetches predictions made at 90, 60, and 30 minutes ago.
     
-    Key insight: Predictions are generated starting 5 minutes ahead of the source timestamp.
-    So to get predictions that start at time T, we fetch the document with source_timestamp = T - 5 minutes.
+    Logic:
+    1. Get current UTC time and round it down to the last 5-minute interval
+    2. Subtract 95, 65, and 35 minutes from that rounded time
+    3. Use those timestamps as Firestore document IDs
     
-    For historical predictions:
-    - 90 min ago predictions: fetch document from 95 min ago (predictions start at 90 min ago)
-    - 60 min ago predictions: fetch document from 65 min ago (predictions start at 60 min ago)
-    - 30 min ago predictions: fetch document from 35 min ago (predictions start at 30 min ago)
+    Example:
+    - Current time: 21:49 UTC → Rounded: 21:45 UTC
+    - 90min ago document: 21:45 - 95 min = 20:10 UTC
+    - 60min ago document: 21:45 - 65 min = 20:40 UTC
+    - 30min ago document: 21:45 - 35 min = 21:10 UTC
     
     Returns:
         Dictionary with keys: predictions_90min_ago, predictions_60min_ago, predictions_30min_ago
@@ -311,13 +314,18 @@ def get_historical_predictions() -> Dict[str, List[Dict[str, Any]]]:
     try:
         current_time = datetime.now(timezone.utc)
         
+        # Round current time down to the last 5-minute interval first
+        rounded_current_str = round_timestamp_to_5_minutes(current_time.isoformat())
+        rounded_current_dt = datetime.fromisoformat(rounded_current_str.replace('Z', '+00:00'))
+        
         # Calculate source timestamps for historical predictions
-        # Predictions start 5 minutes ahead, so subtract 5 more minutes
-        time_90min_source = current_time - timedelta(minutes=95)
-        time_60min_source = current_time - timedelta(minutes=65)
-        time_30min_source = current_time - timedelta(minutes=35)
+        # Subtract 95, 65, and 35 minutes from the rounded current time
+        time_90min_source = rounded_current_dt - timedelta(minutes=95)
+        time_60min_source = rounded_current_dt - timedelta(minutes=65)
+        time_30min_source = rounded_current_dt - timedelta(minutes=35)
         
         logger.info(f"Historical predictions - Current time: {current_time.isoformat()}")
+        logger.info(f"Rounded current time: {rounded_current_str}")
         logger.info(
             f"Fetching documents from: "
             f"95min ago ({time_90min_source.isoformat()}), "
@@ -325,7 +333,7 @@ def get_historical_predictions() -> Dict[str, List[Dict[str, Any]]]:
             f"35min ago ({time_30min_source.isoformat()})"
         )
         
-        # Round timestamps to 5-minute intervals
+        # Round timestamps to 5-minute intervals (should already be on boundaries, but ensure consistency)
         rounded_90min = round_timestamp_to_5_minutes(time_90min_source.isoformat())
         rounded_60min = round_timestamp_to_5_minutes(time_60min_source.isoformat())
         rounded_30min = round_timestamp_to_5_minutes(time_30min_source.isoformat())

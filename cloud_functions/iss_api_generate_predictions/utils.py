@@ -366,7 +366,7 @@ def generate_predictions(
     source_country_code: str
 ) -> Dict[str, Any]:
     """
-    Generates 18 predictions (5, 10, 15, ..., 90 minutes ahead) for a given ISS location.
+    Generates 19 predictions (5, 10, 15, ..., 95 minutes ahead) for a given ISS location.
     Uses TLE + SGP4 to get the "true" current position, then uses orbital mechanics
     to predict future positions.
     
@@ -421,9 +421,10 @@ def generate_predictions(
         
         logger.info(f"Using time interval: {time_interval_minutes:.2f} minutes")
         
-        # Generate 18 predictions using orbital mechanics (5, 10, 15, ..., 90 minutes ahead)
+        # Generate 19 predictions using orbital mechanics (5, 10, 15, ..., 95 minutes ahead)
+        # This ensures predictions go up to the current time when source is 95 minutes ago
         predictions = []
-        for minutes_ahead in range(5, 95, 5):  # 5, 10, 15, ..., 90
+        for minutes_ahead in range(5, 100, 5):  # 5, 10, 15, ..., 95
             # Calculate future timestamp using rounded source timestamp (ensures predictions are on 5-minute boundaries)
             future_dt = source_dt_rounded + timedelta(minutes=minutes_ahead)
             future_timestamp = future_dt.isoformat()
@@ -450,32 +451,7 @@ def generate_predictions(
             predictions.append(prediction)
         
         logger.info(f"Generated {len(predictions)} orbital mechanics predictions")
-        
-        # Generate 1 SGP4 prediction at 90 minutes (since SGP4 is very accurate)
-        logger.info("Generating SGP4 prediction at 90 minutes...")
-        tle_data = fetch_tle_data()
-        if tle_data:
-            tle_line1, tle_line2 = tle_data
-            sgp4_future_dt = source_dt_rounded + timedelta(minutes=90)
-            sgp4_position = get_sgp4_position(tle_line1, tle_line2, sgp4_future_dt)
-            
-            if sgp4_position:
-                sgp4_prediction = {
-                    'minutes_ahead': 90,
-                    'timestamp': sgp4_future_dt.isoformat(),
-                    'timestamp_unix': int(sgp4_future_dt.timestamp()),
-                    'latitude': sgp4_position['latitude'],
-                    'longitude': sgp4_position['longitude'],
-                    'method': 'sgp4'
-                }
-                predictions.append(sgp4_prediction)
-                logger.info(f"SGP4 prediction added: lat={sgp4_position['latitude']:.4f}, lon={sgp4_position['longitude']:.4f}")
-            else:
-                logger.warning("SGP4 prediction calculation failed")
-        else:
-            logger.warning("Could not fetch TLE data for SGP4 prediction")
-        
-        logger.info(f"Total predictions generated: {len(predictions)} (18 orbital mechanics + 1 SGP4)")
+        logger.info(f"Total predictions generated: {len(predictions)} (19 orbital mechanics)")
         
         # Create document reference for source document
         source_doc_ref = db.collection('iss_loc_history').document(source_document_id)

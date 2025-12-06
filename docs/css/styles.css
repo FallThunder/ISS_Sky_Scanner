@@ -438,6 +438,7 @@ h2 {
     filter: drop-shadow(0 0 12px rgba(255, 100, 0, 1)) drop-shadow(0 0 24px rgba(255, 100, 0, 1)) drop-shadow(0 0 36px rgba(255, 100, 0, 0.9)) hue-rotate(15deg) saturate(2.2);
 }
 
+
 /* Clickable range markers */
 .range-marker.clickable {
     cursor: pointer;

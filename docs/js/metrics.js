@@ -456,7 +456,7 @@ function initMetricsLegendToggle() {
     }
     
     updateMetricsLegendVisualState();
-}
+        }
 
 /**
  * Update legend visual state for metrics map
@@ -472,7 +472,7 @@ function updateMetricsLegendVisualState() {
             legendTrueHistorical.classList.remove('disabled');
         } else {
             legendTrueHistorical.classList.add('disabled');
-        }
+            }
     }
     
     if (legendPredicted90min) {
@@ -480,7 +480,7 @@ function updateMetricsLegendVisualState() {
             legendPredicted90min.classList.remove('disabled');
         } else {
             legendPredicted90min.classList.add('disabled');
-        }
+    }
     }
     
     if (legendPredicted60min) {
@@ -540,19 +540,20 @@ function updateGraphsWithHistoricalData() {
         
         // Round newest timestamp down to the nearest 5-minute interval (floor)
         // This gives us the rightmost point of the graph (0 minutes)
-        const newestMinutes = Math.floor(newestRawTimestamp.getMinutes() / 5) * 5;
+        // Use UTC methods for consistency with Firestore timestamps
+        const newestMinutes = Math.floor(newestRawTimestamp.getUTCMinutes() / 5) * 5;
         const newestTimestamp = new Date(newestRawTimestamp);
-        newestTimestamp.setMinutes(newestMinutes);
-        newestTimestamp.setSeconds(0);
-        newestTimestamp.setMilliseconds(0);
+        newestTimestamp.setUTCMinutes(newestMinutes);
+        newestTimestamp.setUTCSeconds(0);
+        newestTimestamp.setUTCMilliseconds(0);
         
         // Calculate the leftmost timestamp (90 minutes before the rounded newest)
         // Ensure it's also on a 5-minute boundary
         const leftmostTimestamp = new Date(newestTimestamp.getTime() - 90 * 60 * 1000);
-        const leftmostMinutes = Math.floor(leftmostTimestamp.getMinutes() / 5) * 5;
-        leftmostTimestamp.setMinutes(leftmostMinutes);
-        leftmostTimestamp.setSeconds(0);
-        leftmostTimestamp.setMilliseconds(0);
+        const leftmostMinutes = Math.floor(leftmostTimestamp.getUTCMinutes() / 5) * 5;
+        leftmostTimestamp.setUTCMinutes(leftmostMinutes);
+        leftmostTimestamp.setUTCSeconds(0);
+        leftmostTimestamp.setUTCMilliseconds(0);
         
         // Create array of 5-minute interval timestamps from leftmost to newest
         // Should create exactly 19 intervals (from -90 to 0 minutes, inclusive)
@@ -631,26 +632,55 @@ function updateGraphsWithHistoricalData() {
         // Get historical predictions if available
         const historicalPredictions = (typeof window !== 'undefined' && window.historicalPredictions) || null;
         
-        // Process 90-minute-ago predictions
-        const predictions90min = historicalPredictions?.predictions_90min_ago || [];
-        console.log(`Processing ${predictions90min.length} predictions for graphs`);
+        // Filter predictions to only include those within the last 90 minutes time range
+        // (from leftmostTimestamp to newestTimestamp)
+        const filterPredictionsInRange = (predictions) => {
+            if (!predictions || predictions.length === 0) return [];
+            return predictions.filter(pred => {
+                const predTime = new Date(pred.timestamp);
+                return predTime >= leftmostTimestamp && predTime <= newestTimestamp;
+            });
+        };
+        
+        // Process all three prediction sets (90, 60, 30 minutes ago)
+        const predictions90min = filterPredictionsInRange(historicalPredictions?.predictions_90min_ago || []);
+        const predictions60min = filterPredictionsInRange(historicalPredictions?.predictions_60min_ago || []);
+        const predictions30min = filterPredictionsInRange(historicalPredictions?.predictions_30min_ago || []);
+        
+        console.log(`Processing predictions for graphs: 90min=${predictions90min.length}, 60min=${predictions60min.length}, 30min=${predictions30min.length}`);
+        
+        // Process each prediction set for both latitude and longitude
         const pred90LatData = processPredictionsForGraph(predictions90min, intervalTimestamps, newestTimestamp, false);
         const pred90LonData = processPredictionsForGraph(predictions90min, intervalTimestamps, newestTimestamp, true);
+        const pred60LatData = processPredictionsForGraph(predictions60min, intervalTimestamps, newestTimestamp, false);
+        const pred60LonData = processPredictionsForGraph(predictions60min, intervalTimestamps, newestTimestamp, true);
+        const pred30LatData = processPredictionsForGraph(predictions30min, intervalTimestamps, newestTimestamp, false);
+        const pred30LonData = processPredictionsForGraph(predictions30min, intervalTimestamps, newestTimestamp, true);
         
         console.log('Prediction data for graphs:', {
-            latData: pred90LatData ? `${pred90LatData.filter(v => v !== null).length} points` : 'null',
-            lonData: pred90LonData ? `${pred90LonData.filter(v => v !== null).length} points` : 'null'
+            pred90: { lat: pred90LatData ? `${pred90LatData.filter(v => v !== null).length} points` : 'null', lon: pred90LonData ? `${pred90LonData.filter(v => v !== null).length} points` : 'null' },
+            pred60: { lat: pred60LatData ? `${pred60LatData.filter(v => v !== null).length} points` : 'null', lon: pred60LonData ? `${pred60LonData.filter(v => v !== null).length} points` : 'null' },
+            pred30: { lat: pred30LatData ? `${pred30LatData.filter(v => v !== null).length} points` : 'null', lon: pred30LonData ? `${pred30LonData.filter(v => v !== null).length} points` : 'null' }
         });
         
-        // Update graphs with data (including predictions)
-        updateGraphsWithData(labels, latitudeData, longitudeData, pred90LatData, pred90LonData);
+        // Update graphs with data (including all predictions)
+        updateGraphsWithData(labels, latitudeData, longitudeData, 
+            pred90LatData, pred90LonData, 
+            pred60LatData, pred60LonData,
+            pred30LatData, pred30LonData);
         
-        // Update map with path (including predictions)
+        // Update map with path (including all predictions)
         updateMetricsMapWithPaths(filteredLocations, newestTimestamp, historicalPredictions);
         
         console.log(`Updated metrics display with ${filteredLocations.length} historical data points`);
         if (predictions90min.length > 0) {
             console.log(`Added ${predictions90min.length} predictions from 90 minutes ago`);
+        }
+        if (predictions60min.length > 0) {
+            console.log(`Added ${predictions60min.length} predictions from 60 minutes ago`);
+        }
+        if (predictions30min.length > 0) {
+            console.log(`Added ${predictions30min.length} predictions from 30 minutes ago`);
         }
         
     } catch (error) {
@@ -669,10 +699,10 @@ function updateGraphsWithHistoricalData() {
  * @returns {Array} Array of values matching intervalTimestamps, or null if no data
  */
 function processPredictionsForGraph(predictions, intervalTimestamps, newestTimestamp, isLongitude) {
-    if (!predictions || predictions.length === 0) {
-        return null;
-    }
-    
+            if (!predictions || predictions.length === 0) {
+                return null;
+            }
+            
     // Create a map of predictions by their timestamp (rounded to 5 minutes for matching)
     // Both predictions and intervals are on 5-minute boundaries, so we can match exactly
     const predictionsByRoundedTime = new Map();
@@ -714,22 +744,22 @@ function processPredictionsForGraph(predictions, intervalTimestamps, newestTimes
         if (!matchingPred) {
             const tolerance = 2.5 * 60 * 1000; // 2.5 minutes in milliseconds
             let closestPred = null;
-            let closestDiff = Infinity;
-            
-            predictions.forEach(pred => {
-                const predTime = new Date(pred.timestamp);
-                const diff = Math.abs(predTime - intervalTs);
+                let closestDiff = Infinity;
+                
+                predictions.forEach(pred => {
+                    const predTime = new Date(pred.timestamp);
+                        const diff = Math.abs(predTime - intervalTs);
                 if (diff <= tolerance && diff < closestDiff) {
-                    closestDiff = diff;
+                            closestDiff = diff;
                     closestPred = pred;
-                }
-            });
-            
+                    }
+                });
+                
             matchingPred = closestPred;
-        }
-        
-        if (matchingPred) {
-            const coordValue = isLongitude ? parseFloat(matchingPred.longitude) : parseFloat(matchingPred.latitude);
+                }
+                
+                if (matchingPred) {
+                    const coordValue = isLongitude ? parseFloat(matchingPred.longitude) : parseFloat(matchingPred.latitude);
             if (!isNaN(coordValue)) {
                 // Store timestamp from the prediction (use the actual prediction timestamp)
                 // Chart.js will use the y property for the value
@@ -739,32 +769,35 @@ function processPredictionsForGraph(predictions, intervalTimestamps, newestTimes
                 };
                 return dataPoint;
             }
-        }
-        return null;
-    });
-    
-    // Check if we have any valid data points
-    const hasData = predictionData.some(val => val !== null);
-    return hasData ? predictionData : null;
+                }
+                return null;
+            });
+            
+            // Check if we have any valid data points
+            const hasData = predictionData.some(val => val !== null);
+            return hasData ? predictionData : null;
 }
 
 /**
  * Update graphs with latitude and longitude data (including predictions)
  */
-function updateGraphsWithData(labels, latitudeData, longitudeData, pred90LatData = null, pred90LonData = null) {
-    // Update Graph 1 (Latitude)
-    if (metricsGraph1) {
-        const datasets = [{
-            label: 'Historical Latitude',
-            data: latitudeData,
-            borderColor: '#FF6B6B',
-            backgroundColor: 'rgba(255, 107, 107, 0.1)',
-            tension: 0.4,
-            fill: false,
-            pointRadius: 0,
-            pointHoverRadius: 4
-        }];
-        
+function updateGraphsWithData(labels, latitudeData, longitudeData, 
+    pred90LatData = null, pred90LonData = null,
+    pred60LatData = null, pred60LonData = null,
+    pred30LatData = null, pred30LonData = null) {
+        // Update Graph 1 (Latitude)
+        if (metricsGraph1) {
+            const datasets = [{
+                label: 'Historical Latitude',
+                data: latitudeData,
+                borderColor: '#FF6B6B',
+                backgroundColor: 'rgba(255, 107, 107, 0.1)',
+                tension: 0.4,
+                fill: false,
+                pointRadius: 0,
+                pointHoverRadius: 4
+            }];
+            
         // Add 90-minute-ago predictions if available
         if (pred90LatData) {
             const validPoints = pred90LatData.filter(v => v !== null).length;
@@ -783,28 +816,66 @@ function updateGraphsWithData(labels, latitudeData, longitudeData, pred90LatData
                     spanGaps: false
                 });
             }
-        } else {
-            console.log('No 90min latitude prediction data to add');
         }
         
-        metricsGraph1.data.labels = labels;
-        metricsGraph1.data.datasets = datasets;
-        metricsGraph1.update();
-    }
-    
-    // Update Graph 2 (Longitude)
-    if (metricsGraph2) {
-        const datasets = [{
-            label: 'Historical Longitude',
-            data: longitudeData,
-            borderColor: '#4a9eff',
-            backgroundColor: 'rgba(74, 158, 255, 0.1)',
-            tension: 0.4,
-            fill: false,
-            pointRadius: 0,
-            pointHoverRadius: 4
-        }];
+        // Add 60-minute-ago predictions if available
+        if (pred60LatData) {
+            const validPoints = pred60LatData.filter(v => v !== null).length;
+            console.log('Adding 60min predictions to latitude graph:', validPoints, 'data points');
+            if (validPoints > 0) {
+                datasets.push({
+                    label: 'Predicted (60 min ago)',
+                    data: pred60LatData,
+                    borderColor: '#FFD700',
+                    backgroundColor: 'transparent',
+                    borderDash: [5, 5],
+                    tension: 0.4,
+                    fill: false,
+                    pointRadius: 0,
+                    pointHoverRadius: 3,
+                    spanGaps: false
+                });
+            }
+        }
         
+        // Add 30-minute-ago predictions if available
+        if (pred30LatData) {
+            const validPoints = pred30LatData.filter(v => v !== null).length;
+            console.log('Adding 30min predictions to latitude graph:', validPoints, 'data points');
+            if (validPoints > 0) {
+                datasets.push({
+                    label: 'Predicted (30 min ago)',
+                    data: pred30LatData,
+                    borderColor: '#FFFF00',
+                    backgroundColor: 'transparent',
+                    borderDash: [5, 5],
+                    tension: 0.4,
+                    fill: false,
+                    pointRadius: 0,
+                    pointHoverRadius: 3,
+                    spanGaps: false
+                });
+            }
+        }
+            
+            metricsGraph1.data.labels = labels;
+            metricsGraph1.data.datasets = datasets;
+            metricsGraph1.update();
+        }
+        
+        // Update Graph 2 (Longitude)
+        if (metricsGraph2) {
+            const datasets = [{
+                label: 'Historical Longitude',
+                data: longitudeData,
+                borderColor: '#4a9eff',
+                backgroundColor: 'rgba(74, 158, 255, 0.1)',
+                tension: 0.4,
+                fill: false,
+                pointRadius: 0,
+                pointHoverRadius: 4
+            }];
+            
         // Add 90-minute-ago predictions if available
         if (pred90LonData) {
             const validPoints = pred90LonData.filter(v => v !== null).length;
@@ -823,13 +894,51 @@ function updateGraphsWithData(labels, latitudeData, longitudeData, pred90LatData
                     spanGaps: false
                 });
             }
-        } else {
-            console.log('No 90min longitude prediction data to add');
         }
         
-        metricsGraph2.data.labels = labels;
-        metricsGraph2.data.datasets = datasets;
-        metricsGraph2.update();
+        // Add 60-minute-ago predictions if available
+        if (pred60LonData) {
+            const validPoints = pred60LonData.filter(v => v !== null).length;
+            console.log('Adding 60min predictions to longitude graph:', validPoints, 'data points');
+            if (validPoints > 0) {
+                datasets.push({
+                    label: 'Predicted (60 min ago)',
+                    data: pred60LonData,
+                    borderColor: '#FFD700',
+                    backgroundColor: 'transparent',
+                    borderDash: [5, 5],
+                    tension: 0.4,
+                    fill: false,
+                    pointRadius: 0,
+                    pointHoverRadius: 3,
+                    spanGaps: false
+                });
+            }
+        }
+        
+        // Add 30-minute-ago predictions if available
+        if (pred30LonData) {
+            const validPoints = pred30LonData.filter(v => v !== null).length;
+            console.log('Adding 30min predictions to longitude graph:', validPoints, 'data points');
+            if (validPoints > 0) {
+                datasets.push({
+                    label: 'Predicted (30 min ago)',
+                    data: pred30LonData,
+                    borderColor: '#FFFF00',
+                    backgroundColor: 'transparent',
+                    borderDash: [5, 5],
+                    tension: 0.4,
+                    fill: false,
+                    pointRadius: 0,
+                    pointHoverRadius: 3,
+                    spanGaps: false
+                });
+            }
+        }
+            
+            metricsGraph2.data.labels = labels;
+            metricsGraph2.data.datasets = datasets;
+            metricsGraph2.update();
     }
 }
 
@@ -846,7 +955,7 @@ function clearMetricsDisplay() {
         metricsGraph2.data.labels = [];
         metricsGraph2.data.datasets = [];
         metricsGraph2.update();
-    }
+}
     // Clear map paths
     metricsMapPolylines.forEach(polyline => {
         if (polyline && metricsMap && metricsMap.hasLayer(polyline)) {
@@ -913,8 +1022,16 @@ function redrawMetricsMapPaths() {
     // Draw 90-minute-ago predictions if available
     if (metricsPathVisibility.predicted90min && historicalPredictions?.predictions_90min_ago) {
         const predictions90 = historicalPredictions.predictions_90min_ago;
-        if (predictions90.length > 0) {
-            const predictionPoints = predictions90.map(pred => [
+        // Filter to only show predictions within the last 90 minutes
+        const newestTimestamp = metricsMapPathData.newestTimestamp;
+        const leftmostTimestamp = newestTimestamp ? new Date(newestTimestamp.getTime() - 90 * 60 * 1000) : null;
+        const filtered90 = leftmostTimestamp ? predictions90.filter(pred => {
+            const predTime = new Date(pred.timestamp);
+            return predTime >= leftmostTimestamp && predTime <= newestTimestamp;
+        }) : predictions90;
+        
+        if (filtered90.length > 0) {
+            const predictionPoints = filtered90.map(pred => [
                 parseFloat(pred.latitude),
                 parseFloat(pred.longitude)
             ]);
@@ -932,6 +1049,76 @@ function redrawMetricsMapPaths() {
                     smoothFactor: 1.0
                 }).addTo(metricsMap);
                 polyline.bindPopup('Predicted Path (90 min ago)');
+                metricsMapPolylines.push(polyline);
+            }
+        }
+    }
+    
+    // Draw 60-minute-ago predictions if available
+    if (metricsPathVisibility.predicted60min && historicalPredictions?.predictions_60min_ago) {
+        const predictions60 = historicalPredictions.predictions_60min_ago;
+        // Filter to only show predictions within the last 90 minutes
+        const newestTimestamp = metricsMapPathData.newestTimestamp;
+        const leftmostTimestamp = newestTimestamp ? new Date(newestTimestamp.getTime() - 90 * 60 * 1000) : null;
+        const filtered60 = leftmostTimestamp ? predictions60.filter(pred => {
+            const predTime = new Date(pred.timestamp);
+            return predTime >= leftmostTimestamp && predTime <= newestTimestamp;
+        }) : predictions60;
+        
+        if (filtered60.length > 0) {
+            const predictionPoints = filtered60.map(pred => [
+                parseFloat(pred.latitude),
+                parseFloat(pred.longitude)
+            ]);
+            
+            const normalizedPredPath = normalizeLongitudePathForMetrics(predictionPoints);
+            
+            // Draw path with multiple offsets to handle longitude wrapping
+            for (let offset = -720; offset <= 720; offset += 360) {
+                const offsetPathPoints = normalizedPredPath.map(point => [point[0], point[1] + offset]);
+                const polyline = L.polyline(offsetPathPoints, {
+                    color: '#FFD700',
+                    weight: 2.5,
+                    opacity: 0.7,
+                    dashArray: '5, 5',
+                    smoothFactor: 1.0
+                }).addTo(metricsMap);
+                polyline.bindPopup('Predicted Path (60 min ago)');
+                metricsMapPolylines.push(polyline);
+            }
+        }
+    }
+    
+    // Draw 30-minute-ago predictions if available
+    if (metricsPathVisibility.predicted30min && historicalPredictions?.predictions_30min_ago) {
+        const predictions30 = historicalPredictions.predictions_30min_ago;
+        // Filter to only show predictions within the last 90 minutes
+        const newestTimestamp = metricsMapPathData.newestTimestamp;
+        const leftmostTimestamp = newestTimestamp ? new Date(newestTimestamp.getTime() - 90 * 60 * 1000) : null;
+        const filtered30 = leftmostTimestamp ? predictions30.filter(pred => {
+            const predTime = new Date(pred.timestamp);
+            return predTime >= leftmostTimestamp && predTime <= newestTimestamp;
+        }) : predictions30;
+        
+        if (filtered30.length > 0) {
+            const predictionPoints = filtered30.map(pred => [
+                parseFloat(pred.latitude),
+                parseFloat(pred.longitude)
+            ]);
+            
+            const normalizedPredPath = normalizeLongitudePathForMetrics(predictionPoints);
+            
+            // Draw path with multiple offsets to handle longitude wrapping
+            for (let offset = -720; offset <= 720; offset += 360) {
+                const offsetPathPoints = normalizedPredPath.map(point => [point[0], point[1] + offset]);
+                const polyline = L.polyline(offsetPathPoints, {
+                    color: '#FFFF00',
+                    weight: 2.5,
+                    opacity: 0.7,
+                    dashArray: '5, 5',
+                    smoothFactor: 1.0
+                }).addTo(metricsMap);
+                polyline.bindPopup('Predicted Path (30 min ago)');
                 metricsMapPolylines.push(polyline);
             }
         }

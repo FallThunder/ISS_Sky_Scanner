@@ -105,14 +105,15 @@ class LocationHistoryManager {
     }
 
     // Round timestamp to nearest 5-minute interval (ignoring seconds)
+    // Uses UTC methods to ensure consistency with Firestore timestamps
     roundTimestampTo5Minutes(isoTimestamp) {
         const dt = new Date(isoTimestamp);
-        const minutes = dt.getMinutes();
+        const minutes = dt.getUTCMinutes();
         const roundedMinutes = Math.floor(minutes / 5) * 5;
         const rounded = new Date(dt);
-        rounded.setMinutes(roundedMinutes);
-        rounded.setSeconds(0);
-        rounded.setMilliseconds(0);
+        rounded.setUTCMinutes(roundedMinutes);
+        rounded.setUTCSeconds(0);
+        rounded.setUTCMilliseconds(0);
         return rounded.toISOString();
     }
 
@@ -225,31 +226,33 @@ class LocationHistoryManager {
         
         const newestTime = new Date(newestLocation.timestamp);
         // Round newest time to nearest 5 minutes (using floor for consistency with roundTimestampTo5Minutes)
-        const newestMinutes = Math.floor(newestTime.getMinutes() / 5) * 5;
+        // Use UTC methods to ensure consistency with Firestore timestamps
+        const newestMinutes = Math.floor(newestTime.getUTCMinutes() / 5) * 5;
         const roundedNewestTime = new Date(newestTime);
-        roundedNewestTime.setMinutes(newestMinutes);
-        roundedNewestTime.setSeconds(0);
-        roundedNewestTime.setMilliseconds(0);
+        roundedNewestTime.setUTCMinutes(newestMinutes);
+        roundedNewestTime.setUTCSeconds(0);
+        roundedNewestTime.setUTCMilliseconds(0);
         
         // Calculate oldest time (24 hours before newest, rounded to 5-minute interval)
         const oldestTime = new Date(roundedNewestTime.getTime() - (24 * 60 * 60 * 1000));
-        const oldestMinutes = Math.floor(oldestTime.getMinutes() / 5) * 5;
+        const oldestMinutes = Math.floor(oldestTime.getUTCMinutes() / 5) * 5;
         const roundedOldestTime = new Date(oldestTime);
-        roundedOldestTime.setMinutes(oldestMinutes);
-        roundedOldestTime.setSeconds(0);
-        roundedOldestTime.setMilliseconds(0);
+        roundedOldestTime.setUTCMinutes(oldestMinutes);
+        roundedOldestTime.setUTCSeconds(0);
+        roundedOldestTime.setUTCMilliseconds(0);
         
         // Create a map of existing locations by rounded timestamp (5-minute intervals)
         // Use the same rounding method as roundTimestampTo5Minutes() for consistency
+        // Use UTC methods to ensure consistency with Firestore timestamps
         const locationMap = new Map();
         this.locations.forEach(loc => {
             const locTime = new Date(loc.timestamp);
             // Round to nearest 5 minutes (using floor to match roundTimestampTo5Minutes)
-            const roundedMinutes = Math.floor(locTime.getMinutes() / 5) * 5;
+            const roundedMinutes = Math.floor(locTime.getUTCMinutes() / 5) * 5;
             const roundedTime = new Date(locTime);
-            roundedTime.setMinutes(roundedMinutes);
-            roundedTime.setSeconds(0);
-            roundedTime.setMilliseconds(0);
+            roundedTime.setUTCMinutes(roundedMinutes);
+            roundedTime.setUTCSeconds(0);
+            roundedTime.setUTCMilliseconds(0);
             const key = roundedTime.getTime();
             locationMap.set(key, loc);
         });
@@ -296,20 +299,20 @@ class LocationHistoryManager {
         }
         
         const currentTime = new Date(currentTimeEntry.timestamp);
-        // Round current time to nearest 5 minutes
-        const currentMinutes = Math.round(currentTime.getMinutes() / 5) * 5;
+        // Round current time to nearest 5 minutes (use UTC methods for consistency)
+        const currentMinutes = Math.round(currentTime.getUTCMinutes() / 5) * 5;
         const roundedCurrentTime = new Date(currentTime);
-        roundedCurrentTime.setMinutes(currentMinutes);
-        roundedCurrentTime.setSeconds(0);
-        roundedCurrentTime.setMilliseconds(0);
+        roundedCurrentTime.setUTCMinutes(currentMinutes);
+        roundedCurrentTime.setUTCSeconds(0);
+        roundedCurrentTime.setUTCMilliseconds(0);
         
         // Calculate end time (90 minutes after current, rounded to 5-minute interval)
         const endTime = new Date(roundedCurrentTime.getTime() + (90 * 60 * 1000));
-        const endMinutes = Math.round(endTime.getMinutes() / 5) * 5;
+        const endMinutes = Math.round(endTime.getUTCMinutes() / 5) * 5;
         const roundedEndTime = new Date(endTime);
-        roundedEndTime.setMinutes(endMinutes);
-        roundedEndTime.setSeconds(0);
-        roundedEndTime.setMilliseconds(0);
+        roundedEndTime.setUTCMinutes(endMinutes);
+        roundedEndTime.setUTCSeconds(0);
+        roundedEndTime.setUTCMilliseconds(0);
         
         // Create a map of predictions grouped by predicted timestamp (rounded to 5-minute intervals)
         // Each group contains all predictions (from any source) that predict the same future time
@@ -319,13 +322,14 @@ class LocationHistoryManager {
                 const predictions = this.predictionsBySource[sourceTs];
                 if (predictions && predictions.length > 0) {
                     // Group predictions by their predicted timestamp (rounded to 5 minutes)
+                    // Use UTC methods for consistency with Firestore timestamps
                     predictions.forEach(pred => {
                         const predTime = new Date(pred.timestamp);
-                        const roundedMinutes = Math.round(predTime.getMinutes() / 5) * 5;
+                        const roundedMinutes = Math.round(predTime.getUTCMinutes() / 5) * 5;
                         const roundedTime = new Date(predTime);
-                        roundedTime.setMinutes(roundedMinutes);
-                        roundedTime.setSeconds(0);
-                        roundedTime.setMilliseconds(0);
+                        roundedTime.setUTCMinutes(roundedMinutes);
+                        roundedTime.setUTCSeconds(0);
+                        roundedTime.setUTCMilliseconds(0);
                         const key = roundedTime.getTime();
                         
                         // Create or update prediction group for this predicted timestamp
@@ -345,9 +349,9 @@ class LocationHistoryManager {
                         // Add this prediction to the group if it matches the rounded timestamp
                         const group = predictionMap.get(key);
                         const predRounded = new Date(pred.timestamp);
-                        predRounded.setMinutes(Math.round(predRounded.getMinutes() / 5) * 5);
-                        predRounded.setSeconds(0);
-                        predRounded.setMilliseconds(0);
+                        predRounded.setUTCMinutes(Math.round(predRounded.getUTCMinutes() / 5) * 5);
+                        predRounded.setUTCSeconds(0);
+                        predRounded.setUTCMilliseconds(0);
                         
                         // Only add if this prediction's rounded timestamp matches the group's key
                         if (predRounded.getTime() === key) {

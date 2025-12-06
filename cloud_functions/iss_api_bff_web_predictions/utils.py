@@ -259,25 +259,25 @@ def process_historical_predictions(pred_data: Optional[Dict[str, Any]]) -> List[
         return predictions_list
     
     for pred in pred_data['orbital_mechanics']:
-        pred_timestamp = pred.get('timestamp')
-        if not pred_timestamp:
-            continue
-        
-        try:
-            # Validate timestamp format
-            datetime.fromisoformat(pred_timestamp.replace('Z', '+00:00'))
+            pred_timestamp = pred.get('timestamp')
+            if not pred_timestamp:
+                continue
             
-            predictions_list.append({
-                'timestamp': pred_timestamp,
-                'latitude': pred.get('latitude'),
-                'longitude': pred.get('longitude'),
-                'source_timestamp': pred_data.get('source_timestamp')
-            })
-        except Exception as e:
-            logger.warning(
-                f"Error processing prediction with timestamp {pred_timestamp}: {str(e)}"
-            )
-            continue
+            try:
+                # Validate timestamp format
+                datetime.fromisoformat(pred_timestamp.replace('Z', '+00:00'))
+                
+                predictions_list.append({
+                    'timestamp': pred_timestamp,
+                    'latitude': pred.get('latitude'),
+                    'longitude': pred.get('longitude'),
+                    'source_timestamp': pred_data.get('source_timestamp')
+                })
+            except Exception as e:
+                logger.warning(
+                    f"Error processing prediction with timestamp {pred_timestamp}: {str(e)}"
+                )
+                continue
     
     # Sort by timestamp to ensure correct order
     predictions_list.sort(key=lambda x: x.get('timestamp', ''))

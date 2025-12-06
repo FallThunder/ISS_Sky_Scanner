@@ -70,12 +70,7 @@
             </div>
             <div class="card" id="history-controls">
                 <h2>Location History & Predictions</h2>
-                <div id="slider-loading" class="predictions-loading">
-                    <div class="loading-spinner" id="slider-loading-spinner"></div>
-                    <div class="loading-checkmark" id="slider-loading-checkmark" style="display: none;"></div>
-                    <p id="slider-loading-text">Loading timeline...</p>
-                </div>
-                <div class="slider-container" id="slider-container" style="display: none;">
+                <div class="slider-container">
                     <div class="slider-range-markers">
                         <span class="range-marker left clickable" id="nav-24h-ago">-24h</span>
                         <span class="range-marker center clickable" id="nav-now">Now</span>
@@ -101,6 +96,11 @@
                         </button>
                     </div>
                     <div id="time-display" class="time-display">No history available</div>
+                </div>
+                <div id="predictions-loading" class="predictions-loading">
+                    <div class="loading-spinner" id="loading-spinner"></div>
+                    <div class="loading-checkmark" id="loading-checkmark" style="display: none;"></div>
+                    <p id="loading-text">Generating predictions...</p>
                 </div>
             </div>
             <div class="card" id="error" style="display: none;">

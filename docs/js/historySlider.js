@@ -234,18 +234,17 @@ class HistorySlider {
         
         // Only set the value if it's not already set or is invalid
         if (!slider.value || slider.value === '' || parseInt(slider.value) > newMax) {
-            // Set to current time position (last history entry) if we have history data
-            // Don't wait for predictions - position to "Now" as soon as history is available
-            if (filledHistoryCount > 0) {
+            // Only set a value if we have predictions (full 48-hour range)
+            // If no predictions yet, leave slider unpositioned until predictions are generated
+            if (predictionsCount > 0 && filledHistoryCount > 0) {
                 // Set to current time position (last history entry before predictions)
                 slider.value = filledHistoryCount - 1;
                 this.currentIndex = this.getInvertedIndex(parseInt(slider.value));
                 console.log('Set slider to current time position:', filledHistoryCount - 1);
             } else {
-                // No history yet, set to 0
-                slider.value = 0;
+                // No predictions yet, don't set a value
                 this.currentIndex = 0;
-                console.log('No history yet, slider positioned at 0');
+                console.log('No predictions yet, slider not positioned');
             }
         } else {
             // Slider already has a valid value, just update the index

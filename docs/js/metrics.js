@@ -161,11 +161,24 @@ function initMetricsGraphs() {
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
+                animation: {
+                    duration: 0  // Disable animations to prevent conflicts when toggling multiple legend items
+                },
                 plugins: {
                     legend: {
                         display: true,
                         labels: {
                             color: '#ffffff'
+                        },
+                        onClick: function(e, legendItem, legend) {
+                            // Get the index of the dataset
+                            const index = legendItem.datasetIndex;
+                            const chart = legend.chart;
+                            const meta = chart.getDatasetMeta(index);
+                            
+                            // Toggle visibility immediately without animation
+                            meta.hidden = meta.hidden === null ? !chart.data.datasets[index].hidden : null;
+                            chart.update('none'); // 'none' mode skips animations
                         }
                     },
                     tooltip: {
@@ -243,11 +256,24 @@ function initMetricsGraphs() {
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
+                animation: {
+                    duration: 0  // Disable animations to prevent conflicts when toggling multiple legend items
+                },
                 plugins: {
                     legend: {
                         display: true,
                         labels: {
                             color: '#ffffff'
+                        },
+                        onClick: function(e, legendItem, legend) {
+                            // Get the index of the dataset
+                            const index = legendItem.datasetIndex;
+                            const chart = legend.chart;
+                            const meta = chart.getDatasetMeta(index);
+                            
+                            // Toggle visibility immediately without animation
+                            meta.hidden = meta.hidden === null ? !chart.data.datasets[index].hidden : null;
+                            chart.update('none'); // 'none' mode skips animations
                         }
                     },
                     tooltip: {
@@ -428,12 +454,27 @@ function updateGraphsWithHistoricalData() {
         const historicalPredictions = (typeof window !== 'undefined' && window.historicalPredictions) || null;
         
         // Helper function to process prediction data for a graph
-        const processPredictionsForGraph = (predictions, isLongitude) => {
-            if (!predictions || predictions.length === 0) return null;
+        const processPredictionsForGraph = (predictions, isLongitude, label) => {
+            if (!predictions || predictions.length === 0) {
+                console.log(`${label} - No predictions provided`);
+                return null;
+            }
+            
+            console.log(`${label} - Processing ${predictions.length} predictions`);
+            if (predictions.length > 0) {
+                const firstPred = predictions[0];
+                const lastPred = predictions[predictions.length - 1];
+                const firstPredTime = new Date(firstPred.timestamp);
+                const lastPredTime = new Date(lastPred.timestamp);
+                const firstMinutesDiff = (firstPredTime - newestTimestamp) / (1000 * 60);
+                const lastMinutesDiff = (lastPredTime - newestTimestamp) / (1000 * 60);
+                console.log(`${label} - First prediction: ${firstPred.timestamp} (${firstMinutesDiff.toFixed(1)} min from newest)`);
+                console.log(`${label} - Last prediction: ${lastPred.timestamp} (${lastMinutesDiff.toFixed(1)} min from newest)`);
+            }
             
             // Create a map of predicted timestamp to coordinate value
             // Match predictions to actual historical timestamps, not rounded labels
-            const predictionData = actualMinutesDiff.map(actualMinDiff => {
+            const predictionData = actualMinutesDiff.map((actualMinDiff, idx) => {
                 // Find the prediction closest to this actual timestamp
                 let closestPred = null;
                 let closestDiff = Infinity;
@@ -450,6 +491,13 @@ function updateGraphsWithHistoricalData() {
                     }
                 });
                 
+                if (closestPred && idx === 0) {
+                    // Log the first match to see what's happening
+                    const predTime = new Date(closestPred.timestamp);
+                    const predMinutesDiff = (predTime - newestTimestamp) / (1000 * 60);
+                    console.log(`${label} - First match: actualMinDiff=${actualMinDiff.toFixed(1)}, predMinDiff=${predMinutesDiff.toFixed(1)}, diff=${closestDiff.toFixed(1)}`);
+                }
+                
                 if (closestPred) {
                     const coordValue = isLongitude ? parseFloat(closestPred.longitude) : parseFloat(closestPred.latitude);
                     return !isNaN(coordValue) ? coordValue : null;
@@ -459,17 +507,25 @@ function updateGraphsWithHistoricalData() {
             
             // Check if we have any valid data points
             const hasData = predictionData.some(val => val !== null);
+            console.log(`${label} - Matched ${predictionData.filter(v => v !== null).length} out of ${predictionData.length} data points`);
             return hasData ? predictionData : null;
         };
         
         // Process predictions for each time period
-        const pred90Lat = historicalPredictions ? processPredictionsForGraph(historicalPredictions.predictions_90min_ago, false) : null;
-        const pred60Lat = historicalPredictions ? processPredictionsForGraph(historicalPredictions.predictions_60min_ago, false) : null;
-        const pred30Lat = historicalPredictions ? processPredictionsForGraph(historicalPredictions.predictions_30min_ago, false) : null;
+        console.log('=== Processing Historical Predictions for Graphs ===');
+        console.log('Newest timestamp (0 min):', newestTimestamp.toISOString());
+        console.log('Oldest timestamp:', validLocations[0] ? new Date(validLocations[0].timestamp).toISOString() : 'N/A');
+        console.log('Actual minutes diff range:', actualMinutesDiff[0]?.toFixed(1), 'to', actualMinutesDiff[actualMinutesDiff.length - 1]?.toFixed(1));
         
-        const pred90Lon = historicalPredictions ? processPredictionsForGraph(historicalPredictions.predictions_90min_ago, true) : null;
-        const pred60Lon = historicalPredictions ? processPredictionsForGraph(historicalPredictions.predictions_60min_ago, true) : null;
-        const pred30Lon = historicalPredictions ? processPredictionsForGraph(historicalPredictions.predictions_30min_ago, true) : null;
+        const pred90Lat = historicalPredictions ? processPredictionsForGraph(historicalPredictions.predictions_90min_ago, false, '90min Lat') : null;
+        const pred60Lat = historicalPredictions ? processPredictionsForGraph(historicalPredictions.predictions_60min_ago, false, '60min Lat') : null;
+        const pred30Lat = historicalPredictions ? processPredictionsForGraph(historicalPredictions.predictions_30min_ago, false, '30min Lat') : null;
+        
+        const pred90Lon = historicalPredictions ? processPredictionsForGraph(historicalPredictions.predictions_90min_ago, true, '90min Lon') : null;
+        const pred60Lon = historicalPredictions ? processPredictionsForGraph(historicalPredictions.predictions_60min_ago, true, '60min Lon') : null;
+        const pred30Lon = historicalPredictions ? processPredictionsForGraph(historicalPredictions.predictions_30min_ago, true, '30min Lon') : null;
+        
+        console.log('=== Finished Processing Historical Predictions ===');
         
         // Update Graph 1 (Latitude)
         if (metricsGraph1) {

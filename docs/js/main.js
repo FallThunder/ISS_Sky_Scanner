@@ -35,14 +35,13 @@ function hidePredictionsLoading() {
 
 let map = null;
 let issMarker = null;
-let predictionPathPolylines = [];
-let predictionMarkers = [];
 let currentISSLocation = null;
 let isCurrentLocationLoaded = false;
 
-let pathVisibility = {
-    predicted: true
-};
+// Prediction display variables
+let predictionPath = []; // Array of polylines for world copies
+let predictionMarkers = [];
+let predictionsVisible = true;
 
 const AUTO_REFRESH_INTERVAL = 5 * 60 * 1000;
 const RETRY_INTERVAL = 7 * 1000;
@@ -109,15 +108,15 @@ async function init() {
         }
     });
     
-    console.log('init: Fetching ISS data...');
-    await fetchISSData();
-    console.log('init: Initialization complete');
+    console.log('init: Fetching ISS data and predictions in parallel...');
     
-    // Fetch predictions in background (already called in fetchISSData, but ensure it's called)
-    // This ensures predictions load even if fetchISSData completes before predictions API responds
-    fetchPredictionsData().catch(err => {
-        console.error('Background predictions fetch failed:', err);
-    });
+    // Fetch both APIs in parallel for faster loading
+    await Promise.allSettled([
+        fetchISSData(),
+        fetchPredictionsData()
+    ]);
+    
+    console.log('init: Initialization complete');
     
     startAutoRefresh();
 }
@@ -128,116 +127,20 @@ function initializeLegendToggle() {
     
     if (legendPredicted) {
         legendPredicted.addEventListener('click', () => {
-            pathVisibility.predicted = !pathVisibility.predicted;
+            predictionsVisible = !predictionsVisible;
             updateLegendVisualState();
-            if (pathVisibility.predicted) {
-                redrawPredictionPaths();
-            } else {
-                predictionPathPolylines.forEach(polyline => {
-                    if (polyline && map.hasLayer(polyline)) {
-                        map.removeLayer(polyline);
-                    }
-                });
-                predictionPathPolylines = [];
-            }
-            refreshPredictionMarkers();
+            updatePredictionDisplay();
         });
     }
     
     updateLegendVisualState();
 }
 
-// Refresh prediction markers based on current slider position
-function refreshPredictionMarkers() {
-    if (!map) return;
-    
-    // Remove existing prediction markers
-    predictionMarkers.forEach(marker => {
-        if (marker && map.hasLayer(marker)) {
-            map.removeLayer(marker);
-        }
-    });
-    predictionMarkers = [];
-    
-    // Check visibility first
-    if (!pathVisibility.predicted) return;
-    
-    // Get current location from slider
-    const slider = document.getElementById('history-slider');
-    if (!slider || slider.value === '') return;
-    
-    const currentIndex = parseInt(slider.value);
-    const location = locationHistory.getLocationAt(currentIndex);
-    if (!location) return;
-    
-    // Get predictions for this specific location (not all predictions)
-    let predictionsToShow = [];
-    
-    if (location.isPredictionGroup && location.predictions) {
-        // This is a prediction group - show only predictions for this source timestamp
-        predictionsToShow = location.predictions;
-    } else if (location.isPredicted) {
-        // Single prediction (backward compatibility)
-        predictionsToShow = [location];
-    } else {
-        // Historical location - no predictions to show
-        return;
-    }
-    
-    if (predictionsToShow.length === 0) return;
-    
-    // Create prediction icons
-    const predictionDotIcon = L.divIcon({
-        className: 'prediction-dot',
-        html: '<div style="width: 8px; height: 8px; border-radius: 50%; background-color: #FF6B6B; border: 2px solid white; box-shadow: 0 0 4px rgba(0,0,0,0.5);"></div>',
-        iconSize: [8, 8],
-        iconAnchor: [4, 4]
-    });
-    
-    const bounds = map.getBounds();
-    const west = bounds.getWest();
-    const east = bounds.getEast();
-    
-    predictionsToShow.forEach(pred => {
-        // Skip SGP4 predictions
-        if (pred.method === 'sgp4') {
-            return;
-        }
-        
-        const predLat = parseFloat(pred.latitude);
-        let predLon = parseFloat(pred.longitude);
-        
-        // Normalize longitude
-        while (predLon > 180) predLon -= 360;
-        while (predLon < -180) predLon += 360;
-        
-        let baseLon = predLon;
-        while (baseLon > west - 360) baseLon -= 360;
-        
-        for (let currLon = baseLon; currLon <= east + 720; currLon += 360) {
-            const marker = L.marker([predLat, currLon], { 
-                icon: predictionDotIcon,
-                interactive: true
-            }).addTo(map);
-            
-            const predTime = new Date(pred.timestamp);
-            const minutesAhead = pred.minutes_ahead || '?';
-            const popupContent = `<b>Predicted Location (Orbital Mechanics)</b><br>` +
-                `Time: ${predTime.toLocaleString()}<br>` +
-                `Minutes ahead: ${minutesAhead}<br>` +
-                `Coordinates: ${predLat.toFixed(4)}, ${predLon.toFixed(4)}`;
-            
-            marker.bindPopup(popupContent);
-            predictionMarkers.push(marker);
-        }
-    });
-}
-
 function updateLegendVisualState() {
     const legendPredicted = document.getElementById('legend-predicted');
     
     if (legendPredicted) {
-        if (pathVisibility.predicted) {
+        if (predictionsVisible) {
             legendPredicted.classList.remove('disabled');
         } else {
             legendPredicted.classList.add('disabled');
@@ -261,6 +164,13 @@ function initMap() {
         className: 'dark-map',
         backgroundColor: '#1a1a1a'  // Match our dark theme background
     }).addTo(map);
+
+    // Listen for map view changes to redraw prediction paths for world copies
+    map.on('moveend', () => {
+        if (predictionsVisible) {
+            updatePredictionDisplay();
+        }
+    });
 
     // Add custom center on ISS button
     const centerButton = L.control({position: 'topleft'});
@@ -302,8 +212,10 @@ function initMap() {
 }
 
 function redrawPathsForWorldCopies() {
-    refreshPredictionMarkers();
-        redrawPredictionPaths();
+    // Redraw prediction paths when map view changes
+    if (predictionsVisible) {
+        updatePredictionDisplay();
+    }
             }
 
 
@@ -460,37 +372,13 @@ async function fetchISSDataWithRetry() {
         
         const addResult = updateUI(data);
         
-        // Update slider range and handle smart positioning
+        // Update slider range
         historySlider.updateSliderRange();
         
-        // Smart slider positioning based on previous position
-        console.log('Smart positioning - addResult:', addResult);
-        if (addResult && addResult.currentTimestamp) {
-            console.log('Was at oldest position:', addResult.wasAtOldestPosition);
-            console.log('Current timestamp was:', addResult.currentTimestamp);
-            
-            if (addResult.wasAtOldestPosition) {
-                // Was at oldest position, stay at oldest position (which is now position 0)
-                historySlider.setSliderValue(0, true);
-                console.log('Was at oldest position, staying at oldest position (0)');
-            } else {
-                // Was at a specific timestamp, try to maintain that timestamp
-                const found = historySlider.setSliderToTimestamp(addResult.currentTimestamp);
-                if (!found) {
-                    // Timestamp no longer exists (probably cleaned up), move to current time
+        // Always move to newest entry when new data loads
                     const filledHistoryCount = locationHistory.getFilledHistoryCount();
                     historySlider.setSliderValue(filledHistoryCount - 1, true);
-                    console.log('Previous timestamp not found (likely cleaned up), moved to current time');
-                } else {
-                    console.log('Maintained position at timestamp:', addResult.currentTimestamp);
-                }
-            }
-        } else {
-            // Default behavior - move to current time
-            const filledHistoryCount = locationHistory.getFilledHistoryCount();
-            historySlider.setSliderValue(filledHistoryCount - 1, true);
-            console.log('No addResult, moved to current time');
-        }
+        console.log('New data loaded - moved slider to newest entry at position:', filledHistoryCount - 1);
         
         // Hide any previous error messages
         document.getElementById('error').style.display = 'none';
@@ -606,43 +494,13 @@ function updateMapFromHistory(location) {
         return;
     }
     
-    // Check if this is a placeholder entry (no data available) or missing coordinates
-    // Note: We check specifically for null/undefined, not falsy values, because 0 is a valid coordinate
-    const hasValidCoordinates = 
-        location.latitude !== null && location.latitude !== undefined &&
-        location.longitude !== null && location.longitude !== undefined;
-    
-    if (location.isEmpty || !hasValidCoordinates) {
-        console.log('updateMapFromHistory - Placeholder or missing coordinates, removing markers');
-        // Remove existing markers
-        if (issMarker) {
-            if (Array.isArray(issMarker)) {
-                issMarker.forEach(marker => {
-                    map.removeLayer(marker);
-                    if (marker.uncertaintyCircles) {
-                        marker.uncertaintyCircles.forEach(circle => map.removeLayer(circle));
-                    }
-                });
-            } else {
-                map.removeLayer(issMarker);
-                if (issMarker.uncertaintyCircles) {
-                    issMarker.uncertaintyCircles.forEach(circle => map.removeLayer(circle));
-                }
-            }
-        }
-        issMarker = null;
-        
-        // Show "no data available" message
-        showNoDataMessage(location.timestamp);
-        return;
-    }
-    
-    // Hide "no data available" message if it's showing
+    // Hide "no data available" message if it's showing (we'll show it later if needed)
     hideNoDataMessage();
     
     // Calculate marker position - use centroid for prediction groups
     let lat, lon;
     
+    // Check if this is a prediction group first (they have coordinates in predictions array)
     if (location.isPredictionGroup && location.predictions && location.predictions.length > 0) {
         // Calculate centroid of all predictions for this source timestamp
         const predictions = location.predictions.filter(p => p.method !== 'sgp4'); // Exclude SGP4
@@ -695,6 +553,40 @@ function updateMapFromHistory(location) {
         }
     } else {
         // Use location coordinates directly for historical data
+        // Check if this is a placeholder entry (no data available) or missing coordinates
+        // Note: We check specifically for null/undefined, not falsy values, because 0 is a valid coordinate
+        const hasValidCoordinates = 
+            location.latitude !== null && location.latitude !== undefined &&
+            location.longitude !== null && location.longitude !== undefined;
+        
+        if (location.isEmpty || !hasValidCoordinates) {
+            console.log('updateMapFromHistory - Placeholder or missing coordinates, removing markers');
+            // Remove existing markers
+            if (issMarker) {
+                if (Array.isArray(issMarker)) {
+                    issMarker.forEach(marker => {
+                        map.removeLayer(marker);
+                        if (marker.uncertaintyCircles) {
+                            marker.uncertaintyCircles.forEach(circle => map.removeLayer(circle));
+                        }
+                    });
+                } else {
+                    map.removeLayer(issMarker);
+                    if (issMarker.uncertaintyCircles) {
+                        issMarker.uncertaintyCircles.forEach(circle => map.removeLayer(circle));
+                    }
+                }
+            }
+            issMarker = null;
+            
+            // Only show "no data available" message if we've actually loaded data
+            // This prevents showing the message during initial load before data is fetched
+            if (isCurrentLocationLoaded) {
+                showNoDataMessage(location.timestamp);
+            }
+            return;
+        }
+        
         lat = parseFloat(location.latitude);
         lon = parseFloat(location.longitude);
     }
@@ -702,6 +594,10 @@ function updateMapFromHistory(location) {
     // Validate coordinates are valid numbers
     if (isNaN(lat) || isNaN(lon)) {
         console.warn('updateMapFromHistory - Invalid coordinates after parsing:', { lat, lon, location });
+        // If it's a prediction group but we couldn't calculate coordinates, show no data message
+        if (location.isPredictionGroup) {
+            showNoDataMessage(location.timestamp);
+        }
         return;
     }
     
@@ -726,94 +622,42 @@ function updateMapFromHistory(location) {
         }
     }
     
-    // Remove existing prediction markers
-    predictionMarkers.forEach(marker => {
-        if (marker && map.hasLayer(marker)) {
+    // Check if this is a prediction (future location)
+    // Predictions should NOT be shown via individual markers - they're handled by updatePredictionDisplay()
+    const isPrediction = location.isPredicted || location.isPredictionGroup;
+    const now = new Date();
+    const locationTime = new Date(location.timestamp);
+    const isFuture = locationTime > now;
+    
+    // If this is a prediction, don't create a marker - predictions are shown via updatePredictionDisplay()
+    if (isPrediction || isFuture) {
+        console.log('updateMapFromHistory - Skipping marker creation for prediction (handled by updatePredictionDisplay)');
+        // Remove any existing markers
+        if (issMarker) {
+            if (Array.isArray(issMarker)) {
+                issMarker.forEach(marker => {
             map.removeLayer(marker);
+                    if (marker.uncertaintyCircles) {
+                        marker.uncertaintyCircles.forEach(circle => map.removeLayer(circle));
+                    }
+                });
+            } else {
+                map.removeLayer(issMarker);
+                if (issMarker.uncertaintyCircles) {
+                    issMarker.uncertaintyCircles.forEach(circle => map.removeLayer(circle));
+                }
+            }
         }
-    });
-    predictionMarkers = [];
-    
-    // Display predictions for the selected source timestamp
-    let predictionsToShow = [];
-    
-    if (location.isPredictionGroup && location.predictions) {
-        // This is a prediction group - show all predictions for this source timestamp
-        predictionsToShow = location.predictions;
-        console.log('Displaying', predictionsToShow.length, 'predictions for source timestamp:', location.timestamp);
-    } else if (location.isPredicted) {
-        // Single prediction (backward compatibility)
-        predictionsToShow = [location];
+        issMarker = null;
+        return; // Don't create markers for predictions
     }
     
-    if (predictionsToShow.length > 0 && pathVisibility.predicted) {
-        // Create prediction icon (smaller dot for orbital mechanics)
-        const predictionDotIcon = L.divIcon({
-            className: 'prediction-dot',
-            html: '<div style="width: 8px; height: 8px; border-radius: 50%; background-color: #FF6B6B; border: 2px solid white; box-shadow: 0 0 4px rgba(0,0,0,0.5);"></div>',
-            iconSize: [8, 8],
-            iconAnchor: [4, 4]
-        });
-        
-        const bounds = map.getBounds();
-        const west = bounds.getWest();
-        const east = bounds.getEast();
-        
-        predictionsToShow.forEach(pred => {
-            // Skip SGP4 predictions
-            if (pred.method === 'sgp4') {
-                return;
-            }
-            
-            const predLat = parseFloat(pred.latitude);
-            let predLon = parseFloat(pred.longitude);
-            
-            // Normalize longitude
-            while (predLon > 180) predLon -= 360;
-            while (predLon < -180) predLon += 360;
-            
-            // Calculate base longitude
-            let baseLon = predLon;
-            while (baseLon > west - 360) baseLon -= 360;
-            
-            // Add markers for all visible longitudes
-            for (let currLon = baseLon; currLon <= east + 720; currLon += 360) {
-                const marker = L.marker([predLat, currLon], { 
-                    icon: predictionDotIcon,
-                    interactive: true
-                }).addTo(map);
-                
-                // Create popup content
-                const predTime = new Date(pred.timestamp);
-                const minutesAhead = pred.minutes_ahead || '?';
-                const popupContent = `<b>Predicted Location (Orbital Mechanics)</b><br>` +
-                    `Time: ${predTime.toLocaleString()}<br>` +
-                    `Minutes ahead: ${minutesAhead}<br>` +
-                    `Coordinates: ${predLat.toFixed(4)}, ${predLon.toFixed(4)}`;
-                
-                marker.bindPopup(popupContent);
-                predictionMarkers.push(marker);
-            }
-        });
-        
-        console.log('Added', predictionMarkers.length, 'prediction markers to map');
-    }
-
-    // Create icon based on location type
-    const issIcon = L.icon({
+    // Use ISS icon for historical/current locations only
+    const markerIcon = L.icon({
         iconUrl: './assets/iss-icon.svg',
         iconSize: [32, 32],
         iconAnchor: [16, 16],
         popupAnchor: [0, -16]
-    });
-
-    // Create prediction icon (same size as regular icon)
-    const predictionIcon = L.icon({
-        iconUrl: './assets/iss-icon.svg',
-        iconSize: [32, 32],
-        iconAnchor: [16, 16],
-        popupAnchor: [0, -16],
-        className: 'prediction-marker'
     });
 
     // Get map bounds
@@ -829,72 +673,35 @@ function updateMapFromHistory(location) {
     // Create array to hold markers
     issMarker = [];
 
-    // Check if this is the most recent location or a prediction
+    // Check if this is the most recent location
     const slider = document.getElementById('history-slider');
     const filledHistoryCount = locationHistory.getFilledHistoryCount();
     const isCurrentLocation = parseInt(slider.value) === filledHistoryCount - 1;
-    const isPrediction = location.isPredicted;
-    console.log('Slider value:', slider.value, 'Filled history count:', filledHistoryCount, 'Is current:', isCurrentLocation, 'Is prediction:', isPrediction);
     
+    let popupContent = '';
+    
+    if (isPrediction || isFuture) {
+        // For predictions, show title and coordinates only
+        popupContent = `<b>Predicted Location:</b><br>`;
+        popupContent += formatCoordinates(lat, lon);
+    } else {
+        // Historical or current location
     let popupPrefix = 'Historical Location';
-    if (isCurrentLocation && !isPrediction) {
+        if (isCurrentLocation) {
         popupPrefix = 'ISS Location';
-    } else if (isPrediction) {
-        popupPrefix = 'Predicted Location';
-    }
-
-    // Add markers for all visible longitudes with extra buffer
-    for (let currLon = baseLon; currLon <= east + 720; currLon += 360) {  // Add two world widths to the east
-        const iconToUse = isPrediction ? predictionIcon : issIcon;
-        const marker = L.marker([lat, currLon], { icon: iconToUse }).addTo(map);
-        
-        // Add uncertainty rings for predictions
-        if (isPrediction && location.confidence) {
-            // Calculate uncertainty radius based on confidence (lower confidence = larger radius)
-            const confidence = location.confidence;
-            const maxRadius = 500000; // 500km in meters
-            const minRadius = 50000;  // 50km in meters
-            const uncertaintyRadius = maxRadius - (confidence * (maxRadius - minRadius));
-            
-            // Create three concentric circles with different opacities
-            const innerCircle = L.circle([lat, currLon], {
-                radius: uncertaintyRadius * 0.3,
-                color: '#FF6400',
-                weight: 3,
-                opacity: 0.8,
-                fillOpacity: 0
-            }).addTo(map);
-            
-            const middleCircle = L.circle([lat, currLon], {
-                radius: uncertaintyRadius * 0.6,
-                color: '#FF6400',
-                weight: 2,
-                opacity: 0.6,
-                fillOpacity: 0
-            }).addTo(map);
-            
-            const outerCircle = L.circle([lat, currLon], {
-                radius: uncertaintyRadius,
-                color: '#FF6400',
-                weight: 1,
-                opacity: 0.4,
-                fillOpacity: 0
-            }).addTo(map);
-            
-            // Store circles with the marker for cleanup
-            marker.uncertaintyCircles = [innerCircle, middleCircle, outerCircle];
         }
         
-        let popupContent = `<b>${popupPrefix}:</b><br>`;
+        popupContent = `<b>${popupPrefix}:</b><br>`;
         if (location.location) {
             const flag = getCountryFlag(location.location, location.country_code);
             const flagText = flag ? ` ${flag}` : '';
             popupContent += `${location.location}${flagText}`;
         }
-        if (isPrediction && location.confidence) {
-            popupContent += `<br><small>Confidence: ${Math.round(location.confidence * 100)}%</small>`;
         }
         
+    // Add markers for all visible longitudes with extra buffer
+    for (let currLon = baseLon; currLon <= east + 720; currLon += 360) {  // Add two world widths to the east
+        const marker = L.marker([lat, currLon], { icon: markerIcon }).addTo(map);
         marker.bindPopup(popupContent);
         issMarker.push(marker);
     }
@@ -916,6 +723,192 @@ function updateMapFromHistory(location) {
         });
         closestMarker.openPopup();
     }
+}
+
+// Update prediction display on map (using same approach as metrics page)
+function updatePredictionDisplay() {
+    if (!map) {
+        console.log('updatePredictionDisplay: Map not initialized');
+        return;
+    }
+    
+    // Remove existing prediction paths
+    if (predictionPath && predictionPath.length > 0) {
+        predictionPath.forEach(path => {
+            if (path && map.hasLayer(path)) {
+                map.removeLayer(path);
+            }
+        });
+        predictionPath = [];
+    }
+    
+    predictionMarkers.forEach(marker => {
+        map.removeLayer(marker);
+    });
+    predictionMarkers = [];
+    
+    // If predictions are hidden, stop here
+    if (!predictionsVisible) {
+        console.log('updatePredictionDisplay: Predictions hidden');
+        return;
+    }
+    
+    // Get all predictions from locationHistory (flat array)
+    const allPredictions = locationHistory.getPredictions();
+    
+    if (!allPredictions || allPredictions.length === 0) {
+        console.log('updatePredictionDisplay: No predictions available');
+        return;
+    }
+    
+    // Filter to only future predictions
+    const now = new Date();
+    const futurePredictions = allPredictions.filter(pred => {
+        const predTime = new Date(pred.timestamp);
+        return predTime > now;
+    });
+    
+    if (futurePredictions.length === 0) {
+        console.log('updatePredictionDisplay: No future predictions');
+        return;
+    }
+    
+    console.log(`updatePredictionDisplay: Processing ${futurePredictions.length} future predictions`);
+    
+    // Group predictions by predicted timestamp (rounded to 5 minutes) and calculate centroids
+    // This matches the approach used in metrics.js
+    const predictionsByTimestamp = {};
+    futurePredictions.forEach(pred => {
+        const predTime = new Date(pred.timestamp);
+        const roundedMinutes = Math.round(predTime.getMinutes() / 5) * 5;
+        const roundedTime = new Date(predTime);
+        roundedTime.setMinutes(roundedMinutes);
+        roundedTime.setSeconds(0);
+        roundedTime.setMilliseconds(0);
+        const timestampKey = roundedTime.getTime().toString();
+        
+        if (!predictionsByTimestamp[timestampKey]) {
+            predictionsByTimestamp[timestampKey] = [];
+        }
+        predictionsByTimestamp[timestampKey].push([
+            parseFloat(pred.latitude),
+            parseFloat(pred.longitude)
+        ]);
+    });
+    
+    // Calculate centroids for each timestamp group
+    const centroidPoints = [];
+    const sortedTimestamps = Object.keys(predictionsByTimestamp).sort((a, b) => parseFloat(a) - parseFloat(b));
+    
+    sortedTimestamps.forEach(timestampKey => {
+        const points = predictionsByTimestamp[timestampKey];
+        if (points.length === 0) return;
+        
+        // Calculate centroid (average of all points for this timestamp)
+        let sumLat = 0;
+        const lonValues = [];
+        
+        points.forEach(([lat, lon]) => {
+            sumLat += lat;
+            lonValues.push(lon);
+        });
+        
+        // For longitude, calculate centroid handling wrapping
+        const refLon = lonValues[0];
+        let sumOffset = 0;
+        
+        lonValues.forEach(lon => {
+            let offset = lon - refLon;
+            if (offset > 180) offset -= 360;
+            if (offset < -180) offset += 360;
+            sumOffset += offset;
+        });
+        
+        const avgOffset = sumOffset / lonValues.length;
+        let centroidLon = refLon + avgOffset;
+        
+        // Normalize back to [-180, 180]
+        while (centroidLon > 180) centroidLon -= 360;
+        while (centroidLon < -180) centroidLon += 360;
+        
+        const centroidLat = sumLat / points.length;
+        centroidPoints.push([centroidLat, centroidLon]);
+    });
+    
+    if (centroidPoints.length === 0) {
+        console.log('updatePredictionDisplay: No valid centroid points');
+        return;
+    }
+    
+    console.log(`updatePredictionDisplay: Created ${centroidPoints.length} centroid points`);
+    
+    // Normalize longitude path for world copies (similar to metrics page)
+    const normalizeLongitudePath = (points) => {
+        if (points.length === 0) return points;
+        
+        const normalized = [points[0]];
+        for (let i = 1; i < points.length; i++) {
+            const [lat, lon] = points[i];
+            const [prevLat, prevLon] = normalized[normalized.length - 1];
+            
+            // Find the longitude offset that minimizes the distance
+            let bestLon = lon;
+            let minDist = Math.abs(lon - prevLon);
+            
+            for (let offset = -360; offset <= 360; offset += 360) {
+                const offsetLon = lon + offset;
+                const dist = Math.abs(offsetLon - prevLon);
+                if (dist < minDist) {
+                    minDist = dist;
+                    bestLon = offsetLon;
+                }
+            }
+            
+            normalized.push([lat, bestLon]);
+        }
+        
+        return normalized;
+    };
+    
+    const normalizedPoints = normalizeLongitudePath(centroidPoints);
+    
+    // Create polylines for world copies (similar to metrics page)
+    const bounds = map.getBounds();
+    const west = bounds.getWest();
+    const east = bounds.getEast();
+    predictionPath = [];
+    
+    for (let offset = -720; offset <= 720; offset += 360) {
+        const offsetPathPoints = normalizedPoints.map(point => [point[0], point[1] + offset]);
+        const polyline = L.polyline(offsetPathPoints, {
+            color: '#FF6B6B',
+            weight: 2.5,
+            opacity: 0.7,
+            dashArray: '5, 5',
+            smoothFactor: 1.0
+        }).addTo(map);
+        polyline.bindPopup('Predicted Path');
+        predictionPath.push(polyline);
+    }
+    
+    // Create clickable markers for each prediction centroid point
+    // These markers show lat/long info when clicked
+    const predictionDotIcon = L.divIcon({
+        className: 'prediction-dot-icon',
+        html: '<div style="background-color: #FF6B6B; width: 10px; height: 10px; border-radius: 50%; border: 1px solid white;"></div>',
+        iconSize: [12, 12],
+        iconAnchor: [6, 6]
+    });
+    
+    // Create markers for each centroid point (only for the main world copy, not all copies)
+    centroidPoints.forEach(([lat, lon]) => {
+        const marker = L.marker([lat, lon], { icon: predictionDotIcon }).addTo(map);
+        const popupContent = `<b>Predicted Location:</b><br>${formatCoordinates(lat, lon)}`;
+        marker.bindPopup(popupContent);
+        predictionMarkers.push(marker);
+    });
+    
+    console.log(`updatePredictionDisplay: Displayed ${predictionPath.length} prediction paths with ${centroidPoints.length} points and ${predictionMarkers.length} markers`);
 }
 
 // Update the UI with ISS data
@@ -984,17 +977,7 @@ function updateUI(data) {
         };
         currentISSLocation = currentLocation;
         
-        // Predictions paths will be drawn when predictions are loaded via fetchPredictionsData()
-        // If predictions are already loaded, draw them now
-        const predictions = locationHistory.predictions;
-        if (predictions && predictions.length > 0) {
-            // Get predictions data structure
-            const predictionsData = {
-                orbital_mechanics: locationHistory.predictions.filter(p => p.method !== 'sgp4'),
-                sgp4: locationHistory.predictions.filter(p => p.method === 'sgp4')
-            };
-            drawPredictionPathsFromAPI(currentLocation, predictionsData);
-        }
+        // Predictions display removed - not shown on map
 
         // Update text displays
         coordinates.textContent = `${formatCoordinates(parseFloat(data.latitude), parseFloat(data.longitude))}${data.location ? `\n\n${data.location}` : ''}`;
@@ -1122,10 +1105,14 @@ async function fetchPredictionsData() {
         }
         
         const data = await response.json();
-        console.log('fetchPredictionsData: Data parsed');
+        console.log('fetchPredictionsData: Data parsed', data);
+        console.log('fetchPredictionsData: predictions data:', data.predictions);
+        console.log('fetchPredictionsData: orbital_mechanics:', data.predictions?.orbital_mechanics?.length || 0);
+        console.log('fetchPredictionsData: sgp4:', data.predictions?.sgp4?.length || 0);
         
         if (data.status === 'success' && data.predictions) {
             console.log('fetchPredictionsData: Setting predictions from API...');
+            console.log('fetchPredictionsData: Full predictions object:', JSON.stringify(data.predictions, null, 2));
             locationHistory.setPredictionsFromAPI(data.predictions);
             
             // Store historical predictions for metrics page
@@ -1139,27 +1126,29 @@ async function fetchPredictionsData() {
                 }
             }
             
-            // Update prediction paths if current location is loaded
-            if (currentISSLocation) {
-                drawPredictionPathsFromAPI(currentISSLocation, data.predictions);
-            }
-            
-            // Hide loading animation now that predictions are ready
-            hidePredictionsLoading();
-            
-            console.log('fetchPredictionsData: Completed successfully');
+                    // Update prediction display on map
+                    updatePredictionDisplay();
+                    
+                    // Hide loading animation now that predictions are ready
+                    hidePredictionsLoading();
+                    
+                    console.log('fetchPredictionsData: Completed successfully');
         } else {
             console.warn('fetchPredictionsData: No predictions data in response');
             locationHistory.setPredictionsFromAPI(null);
+            // Clear prediction display if no predictions
+            updatePredictionDisplay();
             hidePredictionsLoading();
         }
         
     } catch (error) {
         console.error('fetchPredictionsData: Error caught:', error);
         console.error('fetchPredictionsData: Error stack:', error.stack);
-        // Don't show error to user for predictions - it's background loading
-        locationHistory.setPredictionsFromAPI(null);
-        hidePredictionsLoading();
+                // Don't show error to user for predictions - it's background loading
+                locationHistory.setPredictionsFromAPI(null);
+                // Clear prediction display on error
+                updatePredictionDisplay();
+                hidePredictionsLoading();
     }
 }
 
@@ -1197,10 +1186,8 @@ async function fetchISSData() {
         document.getElementById('error').style.display = 'none';
         console.log('fetchISSData: Completed successfully');
         
-        // Fetch predictions in the background (don't wait for it)
-        fetchPredictionsData().catch(err => {
-            console.error('Background predictions fetch failed:', err);
-        });
+        // Predictions are fetched in parallel in init(), or separately in fetchISSDataWithRetry()
+        // No need to call here to avoid duplicate calls
         
     } catch (error) {
         console.error('fetchISSData: Error caught:', error);
@@ -1355,177 +1342,5 @@ function normalizeLongitudePath(points) {
     return normalized;
 }
 
-// Store current path data for redrawing on map move (store original wrapped coordinates)
-let currentPathData = null;
-
-// Draw prediction paths on the map using API data
-function drawPredictionPathsFromAPI(baseLocation, predictionsData) {
-    if (!map || !baseLocation) return;
-    
-    // Only draw paths for the current ISS location, not historical locations
-    const isCurrentLocation = currentISSLocation && 
-        new Date(baseLocation.timestamp).getTime() === new Date(currentISSLocation.timestamp).getTime();
-    
-    if (!isCurrentLocation || !predictionsData) {
-        // Clear paths if not current location or no predictions
-    predictionPathPolylines.forEach(polyline => {
-        if (polyline && map.hasLayer(polyline)) {
-            map.removeLayer(polyline);
-        }
-    });
-    predictionPathPolylines = [];
-        currentPathData = null;
-        return;
-    }
-    
-    // Remove existing prediction paths
-    predictionPathPolylines.forEach(polyline => {
-            if (polyline && map.hasLayer(polyline)) {
-                map.removeLayer(polyline);
-            }
-        });
-    predictionPathPolylines = [];
-    
-    // Draw orbital mechanics predictions (18 predictions: 5, 10, ..., 90 minutes)
-    const orbitalPredictions = predictionsData.orbital_mechanics || [];
-    if (orbitalPredictions.length > 0) {
-        const baseLat = parseFloat(baseLocation.latitude);
-        let baseLon = parseFloat(baseLocation.longitude);
-        
-        // Validate base coordinates
-        if (isNaN(baseLat) || isNaN(baseLon)) {
-            console.warn('drawPredictionPathsFromAPI: Invalid base location coordinates', baseLocation);
-            return;
-        }
-        
-        while (baseLon > 180) baseLon -= 360;
-        while (baseLon < -180) baseLon += 360;
-        
-        // Group predictions by their predicted timestamp (rounded to 5 minutes)
-        const predictionsByTimestamp = {};
-        orbitalPredictions.forEach(pred => {
-            let lat = parseFloat(pred.latitude);
-            let lon = parseFloat(pred.longitude);
-            
-            // Skip invalid coordinates
-            if (isNaN(lat) || isNaN(lon)) {
-                return;
-            }
-            
-            // Round predicted timestamp to 5-minute interval for grouping
-            const predTime = new Date(pred.timestamp);
-            const minutes = predTime.getMinutes();
-            const roundedMinutes = Math.floor(minutes / 5) * 5;
-            const roundedTime = new Date(predTime);
-            roundedTime.setMinutes(roundedMinutes);
-            roundedTime.setSeconds(0);
-            roundedTime.setMilliseconds(0);
-            const timestampKey = roundedTime.toISOString();
-            
-            if (!predictionsByTimestamp[timestampKey]) {
-                predictionsByTimestamp[timestampKey] = [];
-            }
-            
-            // Normalize longitude to [-180, 180]
-            while (lon > 180) lon -= 360;
-            while (lon < -180) lon += 360;
-            lat = Math.max(-90, Math.min(90, lat));
-            
-            predictionsByTimestamp[timestampKey].push([lat, lon]);
-        });
-        
-        // Calculate centroid for each timestamp group
-        const centroidPoints = [];
-        const sortedTimestamps = Object.keys(predictionsByTimestamp).sort();
-        
-        sortedTimestamps.forEach(timestampKey => {
-            const points = predictionsByTimestamp[timestampKey];
-            if (points.length === 0) return;
-            
-            // Calculate centroid (average of all points for this timestamp)
-            let sumLat = 0;
-            const lonValues = [];
-            
-            points.forEach(([lat, lon]) => {
-                sumLat += lat;
-                lonValues.push(lon);
-            });
-            
-            // For longitude, calculate centroid handling wrapping
-            // Find the reference point (first point) and calculate relative offsets
-            const refLon = lonValues[0];
-            let sumOffset = 0;
-            
-            lonValues.forEach(lon => {
-                let offset = lon - refLon;
-                // Handle wrapping - choose shortest path
-                if (offset > 180) offset -= 360;
-                if (offset < -180) offset += 360;
-                sumOffset += offset;
-            });
-            
-            const avgOffset = sumOffset / lonValues.length;
-            let centroidLon = refLon + avgOffset;
-            
-            // Normalize back to [-180, 180]
-            while (centroidLon > 180) centroidLon -= 360;
-            while (centroidLon < -180) centroidLon += 360;
-            
-            const centroidLat = sumLat / points.length;
-            centroidPoints.push([centroidLat, centroidLon]);
-        });
-        
-        // Add current location as first point
-        centroidPoints.unshift([baseLat, baseLon]);
-        
-        // Store original wrapped coordinates (not normalized) for redrawing
-        currentPathData = { 
-            pathPoints: centroidPoints.map(p => [p[0], p[1]]) // Deep copy
-        };
-        
-        predictionPathPolylines.forEach(polyline => {
-            if (polyline && map.hasLayer(polyline)) {
-                map.removeLayer(polyline);
-            }
-        });
-        predictionPathPolylines = [];
-        redrawPredictionPaths();
-    }
-}
-
-function redrawPredictionPaths() {
-    if (!currentPathData || !currentPathData.pathPoints || currentPathData.pathPoints.length === 0) {
-        return;
-    }
-    
-    if (!pathVisibility.predicted) {
-        predictionPathPolylines.forEach(polyline => {
-            if (polyline && map.hasLayer(polyline)) {
-                map.removeLayer(polyline);
-            }
-        });
-        predictionPathPolylines = [];
-        return;
-    }
-    
-    if (predictionPathPolylines.length > 0) {
-        return;
-    }
-    
-    const normalizedPoints = normalizeLongitudePath(currentPathData.pathPoints);
-    
-    for (let offset = -720; offset <= 720; offset += 360) {
-        const offsetPathPoints = normalizedPoints.map(point => [point[0], point[1] + offset]);
-                    const polyline = L.polyline(offsetPathPoints, {
-                color: '#FF6B6B',
-                weight: 3,
-                opacity: 0.8,
-                dashArray: '5, 5'
-                    }).addTo(map);
-                    
-        polyline.bindPopup('Predicted Path (Orbital Mechanics)');
-            predictionPathPolylines.push(polyline);
-        }
-    }
-    
+// Prediction path drawing functions removed - predictions not displayed on map
 

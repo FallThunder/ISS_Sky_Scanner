@@ -128,6 +128,8 @@ class LocationHistoryManager {
         const predictionsBySource = {};
         
         // Add orbital mechanics predictions
+        console.log('setPredictionsFromAPI: orbital_mechanics type:', typeof predictionsData.orbital_mechanics, 'isArray:', Array.isArray(predictionsData.orbital_mechanics));
+        console.log('setPredictionsFromAPI: orbital_mechanics length:', predictionsData.orbital_mechanics?.length || 0);
         if (predictionsData.orbital_mechanics && Array.isArray(predictionsData.orbital_mechanics)) {
             predictionsData.orbital_mechanics.forEach(pred => {
                 const rawSourceTs = pred.source_timestamp || pred.timestamp;
@@ -150,6 +152,8 @@ class LocationHistoryManager {
         }
         
         // Add SGP4 predictions if available
+        console.log('setPredictionsFromAPI: sgp4 type:', typeof predictionsData.sgp4, 'isArray:', Array.isArray(predictionsData.sgp4));
+        console.log('setPredictionsFromAPI: sgp4 length:', Array.isArray(predictionsData.sgp4) ? predictionsData.sgp4.length : (predictionsData.sgp4 ? 1 : 0));
         if (predictionsData.sgp4) {
             const sgp4Predictions = Array.isArray(predictionsData.sgp4) 
                 ? predictionsData.sgp4 
@@ -306,14 +310,14 @@ class LocationHistoryManager {
         roundedEndTime.setSeconds(0);
         roundedEndTime.setMilliseconds(0);
         
-        // Create a map of existing predictions by predicted timestamp (rounded to 5-minute intervals)
-        // We need to find the best matching prediction for each time slot
+        // Create a map of predictions grouped by predicted timestamp (rounded to 5-minute intervals)
+        // Each group contains all predictions (from any source) that predict the same future time
         const predictionMap = new Map();
         if (this.predictionsBySource) {
             Object.keys(this.predictionsBySource).forEach(sourceTs => {
                 const predictions = this.predictionsBySource[sourceTs];
                 if (predictions && predictions.length > 0) {
-                    // For each prediction, map it by its predicted timestamp
+                    // Group predictions by their predicted timestamp (rounded to 5 minutes)
                     predictions.forEach(pred => {
                         const predTime = new Date(pred.timestamp);
                         const roundedMinutes = Math.round(predTime.getMinutes() / 5) * 5;
@@ -323,49 +327,47 @@ class LocationHistoryManager {
                         roundedTime.setMilliseconds(0);
                         const key = roundedTime.getTime();
                         
-                        // Store prediction group entry (one per source timestamp)
-                        // If multiple predictions exist for the same rounded timestamp, keep the first one
+                        // Create or update prediction group for this predicted timestamp
                         if (!predictionMap.has(key)) {
+                            // Create new group - use the rounded timestamp as the group timestamp
                             predictionMap.set(key, {
-                                timestamp: pred.timestamp,
+                                timestamp: roundedTime.toISOString(), // Use rounded timestamp for consistency
                                 latitude: pred.latitude,
                                 longitude: pred.longitude,
                                 isPredicted: true,
                                 isPredictionGroup: true,
-                                predictions: predictions, // Store all predictions for this source timestamp
+                                predictions: [], // Will collect all predictions for this time
                                 source_timestamp: sourceTs
                             });
+                        }
+                        
+                        // Add this prediction to the group if it matches the rounded timestamp
+                        const group = predictionMap.get(key);
+                        const predRounded = new Date(pred.timestamp);
+                        predRounded.setMinutes(Math.round(predRounded.getMinutes() / 5) * 5);
+                        predRounded.setSeconds(0);
+                        predRounded.setMilliseconds(0);
+                        
+                        // Only add if this prediction's rounded timestamp matches the group's key
+                        if (predRounded.getTime() === key) {
+                            group.predictions.push(pred);
                         }
                     });
                 }
             });
         }
         
-        // Generate filled array with placeholders for missing prediction slots
+        // Return only actual predictions (no placeholders for future predictions)
         const filledPredictions = [];
-        const fiveMinutes = 5 * 60 * 1000; // 5 minutes in milliseconds
         
-        // Start from current time + 5 minutes and go forward to end time (inclusive)
-        // We start at +5 minutes because current time is already in history
-        for (let time = roundedCurrentTime.getTime() + fiveMinutes; time <= roundedEndTime.getTime(); time += fiveMinutes) {
-            const roundedTime = new Date(time);
-            const key = roundedTime.getTime();
-            
-            if (predictionMap.has(key)) {
-                // Use existing prediction
-                filledPredictions.push(predictionMap.get(key));
-            } else {
-                // Create placeholder entry
-                filledPredictions.push({
-                    timestamp: roundedTime.toISOString(),
-                    isEmpty: true,
-                    latitude: null,
-                    longitude: null,
-                    location: null,
-                    isPredicted: true
-                });
-            }
-        }
+        // Sort predictions by timestamp and add them directly
+        const sortedPredictions = Array.from(predictionMap.values()).sort((a, b) => {
+            return new Date(a.timestamp) - new Date(b.timestamp);
+        });
+        
+        filledPredictions.push(...sortedPredictions);
+        
+        console.log('fillGapsInPredictions: Created', filledPredictions.length, 'prediction groups (no placeholders)');
         
         return filledPredictions;
     }

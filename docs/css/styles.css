@@ -416,7 +416,6 @@ h2 {
 
 .path-legend .legend-item.clickable.disabled .legend-label {
     opacity: 0.5;
-    text-decoration: line-through;
 }
 
 .path-legend .legend-color {

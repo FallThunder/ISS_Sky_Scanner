@@ -132,9 +132,9 @@ def get_predictions_for_timestamp(timestamp: str):
 
 def get_all_predictions():
     """
-    Fetches prediction documents from Firestore and aggregates them by predicted timestamp.
-    Limits to recent documents (last 24 hours) to optimize performance.
-    Uses Firestore query filters to reduce data transfer.
+    Fetches the most recent prediction document from Firestore and returns only future predictions.
+    Gets the latest prediction document (by source_timestamp) and filters to only include
+    predictions where the predicted timestamp is in the future.
     
     Returns:
         dict: Aggregated predictions grouped by predicted timestamp
@@ -143,41 +143,51 @@ def get_all_predictions():
         logger.info("Fetching prediction documents from Firestore")
         
         current_time = datetime.now(timezone.utc)
-        # Only process predictions from the last 24 hours to limit query size
-        cutoff_time = current_time - timedelta(hours=24)
         
-        # Use Firestore query with timestamp filter to reduce documents fetched
+        # Use Firestore query to get the most recent prediction document
         predictions_collection = db.collection('iss_loc_predictions')
         
-        # Query documents where source_timestamp >= cutoff_time
-        # This reduces the number of documents fetched from Firestore
-        cutoff_iso = cutoff_time.isoformat()
-        query = predictions_collection.where('source_timestamp', '>=', cutoff_iso).limit(200)
-        docs = query.stream()
+        # Query documents ordered by source_timestamp descending to get the latest one
+        # Limit to 1 to get only the most recent document
+        query = predictions_collection.order_by('source_timestamp', direction=firestore.Query.DESCENDING).limit(1)
+        docs = list(query.stream())
         
-        # Separate predictions by method and aggregate
+        if not docs:
+            logger.warning("No prediction documents found in Firestore")
+            return {
+                'orbital_mechanics': [],
+                'sgp4': [],
+                'prediction_count': 0
+            }
+        
+        # Get the most recent document
+        doc = docs[0]
+        doc_data = doc.to_dict()
+        source_timestamp = doc_data.get('source_timestamp')
+        predictions = doc_data.get('predictions', [])
+        
+        logger.info(f"Processing latest document with source_timestamp: {source_timestamp}, {len(predictions)} total predictions")
+        
+        # Separate predictions by method and filter to only include future predictions
         orbital_mechanics_all = []
         sgp4_all = []
         
-        doc_count = 0
-        for doc in docs:
-            doc_count += 1
-            doc_data = doc.to_dict()
-            source_timestamp = doc_data.get('source_timestamp')
-            predictions = doc_data.get('predictions', [])
+        future_count = 0
+        past_count = 0
+        
+        for pred in predictions:
+            pred_timestamp = pred.get('timestamp')
+            if not pred_timestamp:
+                continue
             
-            for pred in predictions:
-                pred_timestamp = pred.get('timestamp')
-                if not pred_timestamp:
-                    continue
+            # Only include predictions for future times
+            try:
+                pred_dt = datetime.fromisoformat(pred_timestamp.replace('Z', '+00:00'))
+                if pred_dt <= current_time:
+                    past_count += 1
+                    continue  # Skip past predictions
                 
-                # Only include predictions for future times
-                try:
-                    pred_dt = datetime.fromisoformat(pred_timestamp.replace('Z', '+00:00'))
-                    if pred_dt <= current_time:
-                        continue  # Skip past predictions
-                except Exception:
-                    continue
+                future_count += 1
                 
                 # Add source_timestamp to each prediction
                 pred_with_source = pred.copy()
@@ -188,12 +198,16 @@ def get_all_predictions():
                     sgp4_all.append(pred_with_source)
                 else:
                     orbital_mechanics_all.append(pred_with_source)
+            except Exception as e:
+                logger.warning(f"Error processing prediction: {str(e)}")
+                continue
         
         # Sort by timestamp
         orbital_mechanics_all.sort(key=lambda x: x.get('timestamp', ''))
         sgp4_all.sort(key=lambda x: x.get('timestamp', ''))
         
-        logger.info(f"Processed {doc_count} documents, aggregated {len(orbital_mechanics_all)} orbital mechanics predictions and {len(sgp4_all)} SGP4 predictions")
+        logger.info(f"From latest document: {future_count} future predictions, {past_count} past predictions filtered out")
+        logger.info(f"Aggregated {len(orbital_mechanics_all)} orbital mechanics predictions and {len(sgp4_all)} SGP4 predictions")
         
         return {
             'orbital_mechanics': orbital_mechanics_all,
@@ -252,7 +266,16 @@ def get_all_predictions():
 
 
 def _process_historical_prediction(pred_data, cutoff_time, current_time):
-    """Helper function to process a single historical prediction dataset."""
+    """
+    Helper function to process a single historical prediction dataset.
+    Takes ALL predictions from the found document and filters only by the 90-minute window.
+    This ensures we get the complete graph since all predictions from the source document are included.
+    
+    Args:
+        pred_data: Prediction data from Firestore
+        cutoff_time: 90-minute cutoff time (for filtering overall window)
+        current_time: Current time
+    """
     predictions_list = []
     if pred_data and pred_data.get('orbital_mechanics'):
         for pred in pred_data['orbital_mechanics']:
@@ -260,7 +283,8 @@ def _process_historical_prediction(pred_data, cutoff_time, current_time):
             if pred_timestamp:
                 try:
                     pred_dt = datetime.fromisoformat(pred_timestamp.replace('Z', '+00:00'))
-                    # Only include predictions that fall within the 90-minute window
+                    # Include ALL predictions from the document that fall within the 90-minute window
+                    # This automatically gives us the complete graph since all predictions are present
                     if pred_dt >= cutoff_time and pred_dt <= current_time:
                         predictions_list.append({
                             'timestamp': pred_timestamp,
@@ -286,14 +310,26 @@ def get_historical_predictions():
         current_time = datetime.now(timezone.utc)
         
         # Calculate timestamps for 90, 60, and 30 minutes ago
-        time_90min_ago = current_time - timedelta(minutes=90)
-        time_60min_ago = current_time - timedelta(minutes=60)
-        time_30min_ago = current_time - timedelta(minutes=30)
+        # Since predictions start 5 minutes ahead of source, we need to fetch from 5 minutes earlier
+        # to get predictions that start at the target time
+        # e.g., to get predictions starting at 90 min ago, fetch from 95 min ago (which predicts 5 min ahead = 90 min ago)
+        time_90min_ago = current_time - timedelta(minutes=95)  # Fetch from 95 min ago to get predictions starting at 90 min ago
+        time_60min_ago = current_time - timedelta(minutes=65)  # Fetch from 65 min ago to get predictions starting at 60 min ago
+        time_30min_ago = current_time - timedelta(minutes=35)  # Fetch from 35 min ago to get predictions starting at 30 min ago
+        
+        logger.info(f"Historical predictions - Current time: {current_time.isoformat()}")
+        logger.info(f"Historical predictions - Fetching from 95 min ago (to get predictions starting at 90 min ago): {time_90min_ago.isoformat()}")
+        logger.info(f"Historical predictions - Fetching from 65 min ago (to get predictions starting at 60 min ago): {time_60min_ago.isoformat()}")
+        logger.info(f"Historical predictions - Fetching from 35 min ago (to get predictions starting at 30 min ago): {time_30min_ago.isoformat()}")
         
         # Round each timestamp to nearest 5-minute interval
         rounded_90min = round_timestamp_to_5_minutes(time_90min_ago.isoformat())
         rounded_60min = round_timestamp_to_5_minutes(time_60min_ago.isoformat())
         rounded_30min = round_timestamp_to_5_minutes(time_30min_ago.isoformat())
+        
+        logger.info(f"Historical predictions - 95 min ago (rounded): {rounded_90min}")
+        logger.info(f"Historical predictions - 65 min ago (rounded): {rounded_60min}")
+        logger.info(f"Historical predictions - 35 min ago (rounded): {rounded_30min}")
         
         # Calculate cutoff time for filtering (90 minutes before current time)
         cutoff_time = current_time - timedelta(minutes=90)
@@ -310,6 +346,9 @@ def get_historical_predictions():
             pred_data_30 = future_30.result()
         
         # Process predictions in parallel
+        # We use source_timestamp to find the right documents (95, 65, 35 min ago)
+        # Then include ALL predictions from those documents within the 90-minute window
+        # This automatically gives us the complete graph since all predictions are present
         with ThreadPoolExecutor(max_workers=3) as executor:
             future_90_proc = executor.submit(_process_historical_prediction, pred_data_90, cutoff_time, current_time)
             future_60_proc = executor.submit(_process_historical_prediction, pred_data_60, cutoff_time, current_time)
@@ -320,6 +359,31 @@ def get_historical_predictions():
             predictions_30min = future_30_proc.result()
         
         logger.info(f"Historical predictions: 90min={len(predictions_90min)}, 60min={len(predictions_60min)}, 30min={len(predictions_30min)}")
+        
+        # Log first and last prediction timestamps for each period
+        if predictions_90min:
+            first_90 = predictions_90min[0].get('timestamp')
+            last_90 = predictions_90min[-1].get('timestamp')
+            logger.info(f"90min predictions - First: {first_90}, Last: {last_90}")
+            first_90_dt = datetime.fromisoformat(first_90.replace('Z', '+00:00'))
+            minutes_from_now_90 = (current_time - first_90_dt).total_seconds() / 60
+            logger.info(f"90min predictions - First prediction is {minutes_from_now_90:.1f} minutes ago")
+        
+        if predictions_60min:
+            first_60 = predictions_60min[0].get('timestamp')
+            last_60 = predictions_60min[-1].get('timestamp')
+            logger.info(f"60min predictions - First: {first_60}, Last: {last_60}")
+            first_60_dt = datetime.fromisoformat(first_60.replace('Z', '+00:00'))
+            minutes_from_now_60 = (current_time - first_60_dt).total_seconds() / 60
+            logger.info(f"60min predictions - First prediction is {minutes_from_now_60:.1f} minutes ago")
+        
+        if predictions_30min:
+            first_30 = predictions_30min[0].get('timestamp')
+            last_30 = predictions_30min[-1].get('timestamp')
+            logger.info(f"30min predictions - First: {first_30}, Last: {last_30}")
+            first_30_dt = datetime.fromisoformat(first_30.replace('Z', '+00:00'))
+            minutes_from_now_30 = (current_time - first_30_dt).total_seconds() / 60
+            logger.info(f"30min predictions - First prediction is {minutes_from_now_30:.1f} minutes ago")
         
         return {
             'predictions_90min_ago': predictions_90min,

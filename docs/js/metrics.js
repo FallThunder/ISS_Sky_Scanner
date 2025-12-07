@@ -33,10 +33,8 @@ function initMetricsPage() {
     initMetricsGraphs();
     initGraphSelector();
     initMetricsLegendToggle();
-    // Add a small delay to ensure locationHistory is available
-    setTimeout(() => {
-        updateGraphsWithHistoricalData();
-    }, 300);
+    // Try to update with data if available
+    updateGraphsWithHistoricalData();
 }
 
 /**
@@ -1266,16 +1264,36 @@ function handleMetricsViewShown() {
     }
     
     // Refresh graphs with latest data when view is shown
-    // Add a small delay to ensure locationHistory is available
-    setTimeout(() => {
-        updateGraphsWithHistoricalData();
-    }, 200);
-}
-
-// Make updateGraphsWithHistoricalData available globally so main.js can trigger it
-if (typeof window !== 'undefined') {
-    window.updateMetricsGraphs = updateGraphsWithHistoricalData;
+    // Retry up to 3 times if data isn't ready yet
+    let retryCount = 0;
+    const maxRetries = 3;
+    
+    function attemptUpdate() {
+        const hasHistoricalData = window.locationHistory && 
+                                   window.locationHistory.getLocations().length > 0;
+        const hasPredictions = window.historicalPredictions !== undefined;
+        
+        if (hasHistoricalData || hasPredictions) {
+            updateGraphsWithHistoricalData();
+        } else if (retryCount < maxRetries) {
+            retryCount++;
+            console.log(`[metrics] Data not ready, retry ${retryCount}/${maxRetries}...`);
+            setTimeout(attemptUpdate, 500);
+        } else {
+            console.warn('[metrics] Data still not available after retries');
+            updateGraphsWithHistoricalData(); // Try anyway to show any partial data
+        }
+    }
+    
+    setTimeout(attemptUpdate, 200);
 }
 
 // Export functions
 export { initMetricsPage, handleMetricsViewShown };
+
+// Register update function globally IMMEDIATELY so main.js can trigger it anytime
+// This ensures the function is available even before initMetricsPage is called
+if (typeof window !== 'undefined') {
+    window.updateMetricsGraphs = updateGraphsWithHistoricalData;
+    console.log('[metrics] updateMetricsGraphs registered globally');
+}

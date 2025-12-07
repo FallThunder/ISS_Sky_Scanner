@@ -1040,20 +1040,9 @@ function updatePredictionDisplay() {
     const bounds = map.getBounds();
     const west = bounds.getWest();
     const east = bounds.getEast();
-    const center = bounds.getCenter();
     predictionPath = [];
     
-    // Calculate which world copy to center on based on current view
-    // Find the best starting offset to ensure paths are visible in current viewport
-    let baseOffset = 0;
-    if (normalizedPoints.length > 0) {
-        const firstLon = normalizedPoints[0][1];
-        // Find offset that brings the path closest to viewport center
-        baseOffset = Math.round((center.lng - firstLon) / 360) * 360;
-    }
-    
-    // Draw paths for current view and adjacent world copies
-    for (let offset = baseOffset - 720; offset <= baseOffset + 720; offset += 360) {
+    for (let offset = -720; offset <= 720; offset += 360) {
         const offsetPathPoints = normalizedPoints.map(point => [point[0], point[1] + offset]);
         const polyline = L.polyline(offsetPathPoints, {
             color: '#FF6B6B',
@@ -1246,14 +1235,6 @@ function updateUI(data, skipMapPan = false) {
             
             map.panTo([lat, targetLng]);
             
-            // Update prediction display after map finishes panning (on initial load)
-            // This ensures paths are drawn relative to the correct viewport
-            map.once('moveend', () => {
-                if (predictionsVisible) {
-                    updatePredictionDisplay();
-                }
-            });
-            
             if (data.location && issMarker.length > 0) {
                 const closestMarker = issMarker.reduce((prev, curr) => {
                     const prevDist = Math.abs(prev.getLatLng().lng - targetLng);
@@ -1339,14 +1320,27 @@ async function fetchPredictionsData() {
                 window.historicalPredictions = data.historical_predictions || null;
                 console.log('fetchPredictionsData: Storing historical predictions for metrics:', data.historical_predictions ? 'present' : 'null');
                 
-                // Trigger metrics update if metrics page is already initialized
-                if (typeof window !== 'undefined' && window.updateMetricsGraphs) {
-                    window.updateMetricsGraphs();
-                }
+                // Trigger metrics update - call it regardless of whether it exists yet
+                // The function is registered when metrics.js loads, so it should be available
+                setTimeout(() => {
+                    if (typeof window.updateMetricsGraphs === 'function') {
+                        console.log('fetchPredictionsData: Triggering metrics update');
+                        window.updateMetricsGraphs();
+                    } else {
+                        console.log('fetchPredictionsData: updateMetricsGraphs not yet available');
+                    }
+                }, 100);
             }
             
             // Update prediction display on map
-            updatePredictionDisplay();
+            // On initial load, wait a bit for map to finish positioning
+            if (isInitialLoad) {
+                setTimeout(() => {
+                    updatePredictionDisplay();
+                }, 100);
+            } else {
+                updatePredictionDisplay();
+            };
             
             console.log('fetchPredictionsData: Completed successfully');
         } else {

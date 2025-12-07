@@ -296,112 +296,33 @@ class LocationHistoryManager {
         return filledHistory;
     }
 
-    // Fill gaps in predictions with placeholder entries for missing time slots (90 minutes ahead)
+    // Return predictions exactly as provided by the API (no client-side generation)
     fillGapsInPredictions() {
-        const filledHistory = this.fillGapsInHistory();
-        if (filledHistory.length === 0) {
+        if (!this.predictions || this.predictions.length === 0) {
             return [];
         }
-        
-        // Get the current time (newest history entry, which is the last in filledHistory)
-        const currentTimeEntry = filledHistory[filledHistory.length - 1];
-        if (!currentTimeEntry || !currentTimeEntry.timestamp) {
-            return [];
-        }
-        
-        const currentTime = new Date(currentTimeEntry.timestamp);
-        // Round current time to nearest 5 minutes (use UTC methods for consistency)
-        const currentMinutes = Math.round(currentTime.getUTCMinutes() / 5) * 5;
-        const roundedCurrentTime = new Date(currentTime);
-        roundedCurrentTime.setUTCMinutes(currentMinutes);
-        roundedCurrentTime.setUTCSeconds(0);
-        roundedCurrentTime.setUTCMilliseconds(0);
-        
-        // Calculate end time (90 minutes after current, rounded to 5-minute interval)
-        const endTime = new Date(roundedCurrentTime.getTime() + (90 * 60 * 1000));
-        const endMinutes = Math.round(endTime.getUTCMinutes() / 5) * 5;
-        const roundedEndTime = new Date(endTime);
-        roundedEndTime.setUTCMinutes(endMinutes);
-        roundedEndTime.setUTCSeconds(0);
-        roundedEndTime.setUTCMilliseconds(0);
-        
-        // Create a map of predictions grouped by predicted timestamp (rounded to 5-minute intervals)
-        // Each group contains all predictions (from any source) that predict the same future time
-        const predictionMap = new Map();
-        if (this.predictionsBySource) {
-            Object.keys(this.predictionsBySource).forEach(sourceTs => {
-                const predictions = this.predictionsBySource[sourceTs];
-                if (predictions && predictions.length > 0) {
-                    // Group predictions by their predicted timestamp (rounded to 5 minutes)
-                    // Use UTC methods for consistency with Firestore timestamps
-                    predictions.forEach(pred => {
-                        const predTime = new Date(pred.timestamp);
-                        const roundedMinutes = Math.round(predTime.getUTCMinutes() / 5) * 5;
-                        const roundedTime = new Date(predTime);
-                        roundedTime.setUTCMinutes(roundedMinutes);
-                        roundedTime.setUTCSeconds(0);
-                        roundedTime.setUTCMilliseconds(0);
-                        const key = roundedTime.getTime();
-                        
-                        // Create or update prediction group for this predicted timestamp
-                        if (!predictionMap.has(key)) {
-                            // Create new group - use the rounded timestamp as the group timestamp
-                            predictionMap.set(key, {
-                                timestamp: roundedTime.toISOString(), // Use rounded timestamp for consistency
-                                latitude: pred.latitude,
-                                longitude: pred.longitude,
-                                isPredicted: true,
-                                isPredictionGroup: true,
-                                predictions: [], // Will collect all predictions for this time
-                                source_timestamp: sourceTs
-                            });
-                        }
-                        
-                        // Add this prediction to the group if it matches the rounded timestamp
-                        const group = predictionMap.get(key);
-                        const predRounded = new Date(pred.timestamp);
-                        predRounded.setUTCMinutes(Math.round(predRounded.getUTCMinutes() / 5) * 5);
-                        predRounded.setUTCSeconds(0);
-                        predRounded.setUTCMilliseconds(0);
-                        
-                        // Only add if this prediction's rounded timestamp matches the group's key
-                        if (predRounded.getTime() === key) {
-                            group.predictions.push(pred);
-                        }
-                    });
-                }
-            });
-        }
-        
-        // Return only actual predictions (no placeholders for future predictions)
-        const filledPredictions = [];
-        
-        // Sort predictions by timestamp and add them directly
-        const sortedPredictions = Array.from(predictionMap.values()).sort((a, b) => {
+
+        const sortedPredictions = [...this.predictions].sort((a, b) => {
             return new Date(a.timestamp) - new Date(b.timestamp);
         });
-        
-        filledPredictions.push(...sortedPredictions);
-        
-        console.log('fillGapsInPredictions: Created', filledPredictions.length, 'prediction groups (no placeholders)');
-        
-        return filledPredictions;
+
+        return sortedPredictions.map(pred => ({
+            ...pred,
+            isPredicted: pred.isPredicted ?? true
+        }));
     }
 
     // Get combined history and predictions for the full 48-hour range
     // Returns filled history + filled predictions (one entry per 5-minute interval)
     getAllLocations() {
         const filledHistory = this.fillGapsInHistory();
-        const allLocations = [...filledHistory];
-        
-        // Add filled predictions (with placeholders for gaps)
         const filledPredictions = this.fillGapsInPredictions();
-        allLocations.push(...filledPredictions);
-        
+
+        const allLocations = [...filledHistory, ...filledPredictions];
         console.log('getAllLocations - History:', filledHistory.length, 
-            'Prediction slots:', filledPredictions.length,
+            'Predictions from API:', filledPredictions.length,
             'Total:', allLocations.length);
-        
+
         return allLocations;
     }
     

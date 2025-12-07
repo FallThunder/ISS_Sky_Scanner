@@ -588,99 +588,37 @@ function updateMapFromHistory(location) {
     // Hide "no data available" message if it's showing (we'll show it later if needed)
     hideNoDataMessage();
     
-    // Calculate marker position - use centroid for prediction groups
-    let lat, lon;
+    const hasValidCoordinates = 
+        location.latitude !== null && location.latitude !== undefined &&
+        location.longitude !== null && location.longitude !== undefined;
     
-    // Check if this is a prediction group first (they have coordinates in predictions array)
-    if (location.isPredictionGroup && location.predictions && location.predictions.length > 0) {
-        // Calculate centroid of all predictions for this source timestamp
-        const predictions = location.predictions.filter(p => p.method !== 'sgp4'); // Exclude SGP4
-        if (predictions.length > 0) {
-            let sumLat = 0;
-            const lonValues = [];
-            
-            predictions.forEach(pred => {
-                const predLat = parseFloat(pred.latitude);
-                const predLon = parseFloat(pred.longitude);
-                if (!isNaN(predLat) && !isNaN(predLon)) {
-                    sumLat += predLat;
-                    let normalizedLon = predLon;
-                    while (normalizedLon > 180) normalizedLon -= 360;
-                    while (normalizedLon < -180) normalizedLon += 360;
-                    lonValues.push(normalizedLon);
-                }
-            });
-            
-            if (lonValues.length > 0) {
-                // Calculate centroid longitude handling wrapping
-                const refLon = lonValues[0];
-                let sumOffset = 0;
-                
-                lonValues.forEach(lonVal => {
-                    let offset = lonVal - refLon;
-                    if (offset > 180) offset -= 360;
-                    if (offset < -180) offset += 360;
-                    sumOffset += offset;
-                });
-                
-                const avgOffset = sumOffset / lonValues.length;
-                let centroidLon = refLon + avgOffset;
-                
-                while (centroidLon > 180) centroidLon -= 360;
-                while (centroidLon < -180) centroidLon += 360;
-                
-                lat = sumLat / predictions.length;
-                lon = centroidLon;
-                console.log('updateMapFromHistory - Using centroid for prediction group:', { lat, lon, predictionCount: predictions.length });
-            } else {
-                // Fallback to first prediction if centroid calculation fails
-                lat = parseFloat(location.latitude);
-                lon = parseFloat(location.longitude);
-            }
-        } else {
-            // Fallback to location coordinates
-            lat = parseFloat(location.latitude);
-            lon = parseFloat(location.longitude);
-        }
-    } else {
-        // Use location coordinates directly for historical data
-        // Check if this is a placeholder entry (no data available) or missing coordinates
-        // Note: We check specifically for null/undefined, not falsy values, because 0 is a valid coordinate
-        const hasValidCoordinates = 
-            location.latitude !== null && location.latitude !== undefined &&
-            location.longitude !== null && location.longitude !== undefined;
-        
-        if (location.isEmpty || !hasValidCoordinates) {
-            console.log('updateMapFromHistory - Placeholder or missing coordinates, removing markers');
-            // Remove existing markers
-            if (issMarker) {
-                if (Array.isArray(issMarker)) {
-                    issMarker.forEach(marker => {
-                        map.removeLayer(marker);
-                        if (marker.uncertaintyCircles) {
-                            marker.uncertaintyCircles.forEach(circle => map.removeLayer(circle));
-                        }
-                    });
-                } else {
-                    map.removeLayer(issMarker);
-                    if (issMarker.uncertaintyCircles) {
-                        issMarker.uncertaintyCircles.forEach(circle => map.removeLayer(circle));
+    if (location.isEmpty || !hasValidCoordinates) {
+        console.log('updateMapFromHistory - Placeholder or missing coordinates, removing markers');
+        if (issMarker) {
+            if (Array.isArray(issMarker)) {
+                issMarker.forEach(marker => {
+                    map.removeLayer(marker);
+                    if (marker.uncertaintyCircles) {
+                        marker.uncertaintyCircles.forEach(circle => map.removeLayer(circle));
                     }
+                });
+            } else {
+                map.removeLayer(issMarker);
+                if (issMarker.uncertaintyCircles) {
+                    issMarker.uncertaintyCircles.forEach(circle => map.removeLayer(circle));
                 }
             }
-            issMarker = null;
-            
-            // Only show "no data available" message if we've actually loaded data
-            // This prevents showing the message during initial load before data is fetched
-            if (isCurrentLocationLoaded) {
-                showNoDataMessage(location.timestamp);
-            }
-            return;
         }
+        issMarker = null;
         
-        lat = parseFloat(location.latitude);
-        lon = parseFloat(location.longitude);
+        if (isCurrentLocationLoaded) {
+            showNoDataMessage(location.timestamp);
+        }
+        return;
     }
+    
+    const lat = parseFloat(location.latitude);
+    const lon = parseFloat(location.longitude);
     
     // Validate coordinates are valid numbers
     if (isNaN(lat) || isNaN(lon)) {
@@ -893,99 +831,29 @@ function updatePredictionDisplay() {
         return;
     }
     
-    // Get all predictions from locationHistory (flat array)
     const allPredictions = locationHistory.getPredictions();
-    
     if (!allPredictions || allPredictions.length === 0) {
         console.log('updatePredictionDisplay: No predictions available');
         return;
     }
-    
-    // Filter to only future predictions (last entry already removed in setPredictionsFromAPI)
+
     const now = new Date();
-    const futurePredictions = allPredictions.filter(pred => {
-        const predTime = new Date(pred.timestamp);
-        return predTime > now;
-    });
-    
+    const futurePredictions = allPredictions
+        .map(pred => ({
+            ...pred,
+            lat: parseFloat(pred.latitude),
+            lon: parseFloat(pred.longitude),
+            time: new Date(pred.timestamp)
+        }))
+        .filter(pred => !isNaN(pred.lat) && !isNaN(pred.lon) && pred.time > now)
+        .sort((a, b) => a.time - b.time);
+
     if (futurePredictions.length === 0) {
         console.log('updatePredictionDisplay: No future predictions');
         return;
     }
-    
+
     console.log(`updatePredictionDisplay: Processing ${futurePredictions.length} future predictions`);
-    
-    // Group predictions by predicted timestamp (rounded to 5 minutes) and calculate centroids
-    // This matches the approach used in metrics.js
-    const predictionsByTimestamp = {};
-    futurePredictions.forEach(pred => {
-        const predTime = new Date(pred.timestamp);
-        const roundedMinutes = Math.round(predTime.getMinutes() / 5) * 5;
-        const roundedTime = new Date(predTime);
-        roundedTime.setMinutes(roundedMinutes);
-        roundedTime.setSeconds(0);
-        roundedTime.setMilliseconds(0);
-        const timestampKey = roundedTime.getTime().toString();
-        
-        if (!predictionsByTimestamp[timestampKey]) {
-            predictionsByTimestamp[timestampKey] = [];
-        }
-        predictionsByTimestamp[timestampKey].push([
-            parseFloat(pred.latitude),
-            parseFloat(pred.longitude)
-        ]);
-    });
-    
-    // Calculate centroids for each timestamp group
-    const centroidPoints = [];
-    const sortedTimestamps = Object.keys(predictionsByTimestamp).sort((a, b) => parseFloat(a) - parseFloat(b));
-    
-    sortedTimestamps.forEach(timestampKey => {
-        const points = predictionsByTimestamp[timestampKey];
-        if (points.length === 0) return;
-        
-        // Calculate centroid (average of all points for this timestamp)
-        let sumLat = 0;
-        const lonValues = [];
-        
-        points.forEach(([lat, lon]) => {
-            sumLat += lat;
-            lonValues.push(lon);
-        });
-        
-        // For longitude, calculate centroid handling wrapping
-        const refLon = lonValues[0];
-        let sumOffset = 0;
-        
-        lonValues.forEach(lon => {
-            let offset = lon - refLon;
-            if (offset > 180) offset -= 360;
-            if (offset < -180) offset += 360;
-            sumOffset += offset;
-        });
-        
-        const avgOffset = sumOffset / lonValues.length;
-        let centroidLon = refLon + avgOffset;
-        
-        // Normalize back to [-180, 180]
-        while (centroidLon > 180) centroidLon -= 360;
-        while (centroidLon < -180) centroidLon += 360;
-        
-        const centroidLat = sumLat / points.length;
-        // Store centroid with its timestamp for matching predictions
-        centroidPoints.push({
-            lat: centroidLat,
-            lon: centroidLon,
-            timestamp: parseFloat(timestampKey)
-        });
-    });
-    
-    if (centroidPoints.length === 0) {
-        console.log('updatePredictionDisplay: No valid centroid points');
-        return;
-    }
-    
-    console.log(`updatePredictionDisplay: Created ${centroidPoints.length} centroid points`);
     
     // Normalize longitude path for world copies (similar to metrics page)
     const normalizeLongitudePath = (points) => {
@@ -1016,11 +884,11 @@ function updatePredictionDisplay() {
     };
     
     // Extract just the [lat, lon] pairs for path normalization
-    const centroidCoords = centroidPoints.map(cp => [cp.lat, cp.lon]);
+    const predictionCoords = futurePredictions.map(pred => [pred.lat, pred.lon]);
     
     // Start the predicted path from the current ISS location so the first
     // prediction point connects cleanly on the map.
-    let pathCoords = centroidCoords;
+    let pathCoords = predictionCoords;
     if (isCurrentLocationLoaded) {
         const latestLocation = locationHistory.getLocations()[0];
         if (latestLocation && latestLocation.latitude !== null && latestLocation.longitude !== null) {
@@ -1028,7 +896,7 @@ function updatePredictionDisplay() {
             const currentLon = parseFloat(latestLocation.longitude);
             
             if (!isNaN(currentLat) && !isNaN(currentLon)) {
-                pathCoords = [[currentLat, currentLon], ...centroidCoords];
+                pathCoords = [[currentLat, currentLon], ...predictionCoords];
             }
         }
     }
@@ -1055,7 +923,7 @@ function updatePredictionDisplay() {
         predictionPath.push(polyline);
     }
     
-    console.log(`updatePredictionDisplay: Displayed ${predictionPath.length} prediction paths with ${centroidPoints.length} points`);
+    console.log(`updatePredictionDisplay: Displayed ${predictionPath.length} prediction paths with ${predictionCoords.length} points`);
     
     // Now check if slider is on a prediction and show dots for that specific prediction
     const slider = document.getElementById('history-slider');
@@ -1080,20 +948,13 @@ function updatePredictionDisplay() {
         return;
     }
     
-    // Get the timestamp of the selected prediction (rounded to 5 minutes for matching)
-    const selectedTime = new Date(selectedLocation.timestamp);
-    const roundedMinutes = Math.round(selectedTime.getMinutes() / 5) * 5;
-    const roundedSelectedTime = new Date(selectedTime);
-    roundedSelectedTime.setMinutes(roundedMinutes);
-    roundedSelectedTime.setSeconds(0);
-    roundedSelectedTime.setMilliseconds(0);
-    const selectedTimestampKey = roundedSelectedTime.getTime();
+    // Use exact prediction timestamp to avoid client-side smoothing
+    const selectedTimestampKey = new Date(selectedLocation.timestamp).getTime();
     
-    // Find the centroid point that matches the selected timestamp
-    const matchingCentroid = centroidPoints.find(cp => cp.timestamp === selectedTimestampKey);
+    const matchingPrediction = futurePredictions.find(pred => pred.time.getTime() === selectedTimestampKey);
     
-    if (!matchingCentroid) {
-        console.log('updatePredictionDisplay: No matching centroid found for selected prediction timestamp');
+    if (!matchingPrediction) {
+        console.log('updatePredictionDisplay: No matching prediction found for selected timestamp');
         return;
     }
     
@@ -1101,12 +962,12 @@ function updatePredictionDisplay() {
     
     // Create circle markers for the selected prediction point on all world copies
     predictionDots = [];
-    let baseLon = matchingCentroid.lon;
+    let baseLon = matchingPrediction.lon;
     while (baseLon > west - 360) baseLon -= 360;
     
     for (let currLon = baseLon; currLon <= east + 720; currLon += 360) {
         // Create a circle marker for the prediction point
-        const circle = L.circleMarker([matchingCentroid.lat, currLon], {
+        const circle = L.circleMarker([matchingPrediction.lat, currLon], {
             radius: 6,
             fillColor: '#FF6B6B',
             color: '#FFFFFF',

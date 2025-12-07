@@ -53,6 +53,7 @@ let retryTimer = null;
 let lastDataTimestamp = null;
 let retryCount = 0;
 let isFetching = false;
+let lastRefreshTime = null;
 
 const locationHistory = new LocationHistoryManager();
 // Make locationHistory available globally for metrics page
@@ -120,6 +121,7 @@ async function init() {
     console.log('init: Initialization complete');
     
     startAutoRefresh();
+    setupVisibilityChangeHandler();
 }
 
 // Initialize legend toggle functionality
@@ -201,12 +203,30 @@ function initMap() {
                 </svg>
             </a>
         `;
-        div.onclick = function() {
+        
+        // Prevent map interactions on the control
+        L.DomEvent.disableClickPropagation(div);
+        L.DomEvent.disableScrollPropagation(div);
+        
+        const link = div.querySelector('a');
+        L.DomEvent.on(link, 'click', function(e) {
+            L.DomEvent.preventDefault(e);
             if (issMarker) {
-                map.panTo(issMarker.getLatLng());
+                if (Array.isArray(issMarker) && issMarker.length > 0) {
+                    // Find the marker closest to the current viewport center
+                    const center = map.getCenter();
+                    const closestMarker = issMarker.reduce((prev, curr) => {
+                        const prevDist = Math.abs(prev.getLatLng().lng - center.lng);
+                        const currDist = Math.abs(curr.getLatLng().lng - center.lng);
+                        return currDist < prevDist ? curr : prev;
+                    });
+                    map.panTo(closestMarker.getLatLng());
+                } else if (!Array.isArray(issMarker)) {
+                    map.panTo(issMarker.getLatLng());
+                }
             }
-            return false;
-        };
+        });
+        
         return div;
     };
     centerButton.addTo(map);
@@ -275,6 +295,35 @@ function startAutoRefresh() {
     console.log('Auto-refresh started - next update at:', nextUpdate.toLocaleTimeString());
 }
 
+// Setup Page Visibility API to handle tab switching
+function setupVisibilityChangeHandler() {
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) {
+            // Tab became visible again
+            console.log('Tab became visible, checking if refresh needed...');
+            
+            // Check if we missed a scheduled update while tab was hidden
+            if (lastRefreshTime) {
+                const timeSinceLastRefresh = Date.now() - lastRefreshTime;
+                const missedUpdate = timeSinceLastRefresh > AUTO_REFRESH_INTERVAL;
+                
+                if (missedUpdate) {
+                    console.log(`Missed update detected (${Math.round(timeSinceLastRefresh / 1000)}s since last refresh), triggering refresh...`);
+                    // Cancel any pending timers and fetch immediately
+                    if (autoRefreshTimer) clearTimeout(autoRefreshTimer);
+                    if (retryTimer) clearTimeout(retryTimer);
+                    fetchISSDataWithRetry();
+                } else {
+                    console.log(`No missed update (${Math.round(timeSinceLastRefresh / 1000)}s since last refresh)`);
+                }
+            }
+        } else {
+            // Tab became hidden
+            console.log('Tab became hidden');
+        }
+    });
+}
+
 function getNextScheduledUpdate(currentTime) {
     const nextUpdate = new Date(currentTime);
     const currentMinutes = nextUpdate.getMinutes();
@@ -311,22 +360,26 @@ async function fetchISSDataWithRetry() {
     isFetching = true;
     
     try {
-        const response = await fetch(`${config.API_URL}?api_key=${config.API_KEY}`);
+        // Fetch both current location and 24-hour history in parallel
+        const [currentResponse, historyFetched] = await Promise.all([
+            fetch(`${config.API_URL}?api_key=${config.API_KEY}`),
+            locationHistory.fetchHistory()
+        ]);
         
-        if (!response.ok) {
-            const errorText = await response.text();
+        if (!currentResponse.ok) {
+            const errorText = await currentResponse.text();
             console.error('API Error in retry:', errorText);
-            throw new Error(`API returned ${response.status}: ${errorText}`);
+            throw new Error(`API returned ${currentResponse.status}: ${errorText}`);
         }
         
-        const contentType = response.headers.get('content-type');
+        const contentType = currentResponse.headers.get('content-type');
         if (!contentType || !contentType.includes('application/json')) {
-            const text = await response.text();
+            const text = await currentResponse.text();
             console.error('Unexpected content type in retry. Response text:', text.substring(0, 500));
             throw new Error(`Expected JSON but got ${contentType}`);
         }
         
-        const data = await response.json();
+        const data = await currentResponse.json();
         console.log('Received data in retry:', data);
         
         // Check if we have new data
@@ -367,6 +420,7 @@ async function fetchISSDataWithRetry() {
         }
         retryCount = 0;
         lastDataTimestamp = data.timestamp;
+        lastRefreshTime = Date.now();
         
         // Update actual locations map for accuracy comparison
         updateActualLocations(data);
@@ -929,7 +983,23 @@ function updatePredictionDisplay() {
     
     // Extract just the [lat, lon] pairs for path normalization
     const centroidCoords = centroidPoints.map(cp => [cp.lat, cp.lon]);
-    const normalizedPoints = normalizeLongitudePath(centroidCoords);
+    
+    // Start the predicted path from the current ISS location so the first
+    // prediction point connects cleanly on the map.
+    let pathCoords = centroidCoords;
+    if (isCurrentLocationLoaded) {
+        const latestLocation = locationHistory.getLocations()[0];
+        if (latestLocation && latestLocation.latitude !== null && latestLocation.longitude !== null) {
+            const currentLat = parseFloat(latestLocation.latitude);
+            const currentLon = parseFloat(latestLocation.longitude);
+            
+            if (!isNaN(currentLat) && !isNaN(currentLon)) {
+                pathCoords = [[currentLat, currentLon], ...centroidCoords];
+            }
+        }
+    }
+    
+    const normalizedPoints = normalizeLongitudePath(pathCoords);
     
     // Create polylines for world copies (similar to metrics page)
     // This shows the predicted path line for all predictions
@@ -1036,37 +1106,22 @@ function updateUI(data) {
     }
     
     try {
-        console.log('updateUI: Adding location to history...');
+        console.log('updateUI: Updating display with latest data');
         console.log('updateUI: historySlider exists?', !!historySlider);
-        
-        // Add the new location to history with smart slider positioning
-        const addResult = locationHistory.addLocation({
-            timestamp: data.timestamp,
-            latitude: data.latitude,
-            longitude: data.longitude,
-            location: data.location,
-            fun_fact: data.fun_fact
-        }, () => {
-            if (!historySlider) {
-                console.warn('updateUI: historySlider not initialized yet, returning null');
-                return null;
-            }
-            return historySlider.getCurrentSliderInfo();
-        });
 
         // Predictions are now loaded separately via fetchPredictionsData()
         // No need to process predictions here
 
         if (historySlider) {
-        historySlider.updateSliderRange();
-        
-        const allLocations = locationHistory.getAllLocations();
-        const historyCount = locationHistory.getLocations().length;
-        if (allLocations.length > historyCount) {
-            const firstPrediction = allLocations[historyCount];
-            console.log('Verification - First prediction accessible:', firstPrediction ? firstPrediction.timestamp : 'null');
-        }
-        
+            historySlider.updateSliderRange();
+            
+            const allLocations = locationHistory.getAllLocations();
+            const historyCount = locationHistory.getLocations().length;
+            if (allLocations.length > historyCount) {
+                const firstPrediction = allLocations[historyCount];
+                console.log('Verification - First prediction accessible:', firstPrediction ? firstPrediction.timestamp : 'null');
+            }
+            
             if (!historySlider.isPositioned()) {
                 const filledHistoryCount = locationHistory.getFilledHistoryCount();
                 historySlider.setSliderValue(filledHistoryCount - 1, true);
@@ -1153,11 +1208,11 @@ function updateUI(data) {
             closestMarker.openPopup();
         }
         
-        console.log('updateUI: Completed successfully, returning addResult');
-        return addResult;
+        console.log('updateUI: Completed successfully');
+        return null;
     } catch (error) {
         console.error('updateUI: Error processing data:', error);
-        console.error('updateUI: Error stack:', error.stack);
+        console.error('updateUI: Error stack:', error);
         return null;
     }
 }
@@ -1290,16 +1345,16 @@ async function fetchISSData() {
         
         isCurrentLocationLoaded = true;
         lastDataTimestamp = data.timestamp;
+        lastRefreshTime = Date.now();
         
         updateActualLocations(data);
         console.log('fetchISSData: About to call updateUI with data:', data);
         console.log('fetchISSData: historySlider exists?', !!historySlider);
-        const addResult = updateUI(data);
-        console.log('fetchISSData: updateUI returned:', addResult);
+        updateUI(data);
         
         if (historySlider) {
-        historySlider.updateSliderRange();
-        const filledHistoryCount = locationHistory.getFilledHistoryCount();
+            historySlider.updateSliderRange();
+            const filledHistoryCount = locationHistory.getFilledHistoryCount();
             historySlider.setSliderValue(filledHistoryCount - 1, true);
         } else {
             console.warn('fetchISSData: historySlider not initialized, skipping slider updates');

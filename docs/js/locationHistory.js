@@ -1,60 +1,50 @@
 // Constants
-const STORAGE_KEY = 'iss_location_history';
 const MAX_ENTRIES = 288; // 24 hours worth of entries (1 entry every 5 minutes)
 const PREDICTION_ENTRIES = 288; // 24 hours of predictions (1 entry every 5 minutes)
 
 // Class to manage ISS location history
 class LocationHistoryManager {
     constructor() {
-        this.locations = this.loadFromStorage() || [];
+        this.locations = [];
         this.predictions = []; // Future predictions (now from API) - flat array for backward compatibility
         this.predictionsBySource = {}; // Predictions grouped by source_timestamp
     }
 
-    // Load history from session storage
-    loadFromStorage() {
-        const stored = sessionStorage.getItem(STORAGE_KEY);
-        return stored ? JSON.parse(stored) : null;
-    }
-
-    // Save history to session storage
-    saveToStorage() {
-        sessionStorage.setItem(STORAGE_KEY, JSON.stringify(this.locations));
+    // Fetch 24 hours of history from API
+    async fetchHistory() {
+        try {
+            const response = await fetch('https://us-east1-iss-sky-scanner-20241222.cloudfunctions.net/iss_api_query_time_range?minutes=1440');
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            const data = await response.json();
+            
+            if (!data.locations || !Array.isArray(data.locations)) {
+                throw new Error('Invalid data format from API');
+            }
+            
+            // Sort locations by timestamp to ensure correct order (newest first)
+            this.locations = this.sortLocations(data.locations);
+            
+            // Trim to exactly 24 hours if we have more data
+            if (this.locations.length > MAX_ENTRIES) {
+                this.locations = this.locations.slice(0, MAX_ENTRIES);
+            }
+            
+            console.log('Fetched', this.locations.length, 'locations');
+            console.log('Newest:', this.locations[0]?.timestamp);
+            console.log('Oldest:', this.locations[this.locations.length - 1]?.timestamp);
+            
+            return true;
+        } catch (error) {
+            console.error('Error fetching history:', error);
+            return false;
+        }
     }
 
     // Initialize with 24 hours of history
     async initializeHistory() {
-        if (this.locations.length === 0) {
-            try {
-                const response = await fetch('https://us-east1-iss-sky-scanner-20241222.cloudfunctions.net/iss_api_query_time_range?minutes=1440');
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
-                }
-                const data = await response.json();
-                
-                if (!data.locations || !Array.isArray(data.locations)) {
-                    throw new Error('Invalid data format from API');
-                }
-                
-                // Sort locations by timestamp to ensure correct order (newest first)
-                this.locations = this.sortLocations(data.locations);
-                
-                // Trim to exactly 24 hours if we have more data
-                if (this.locations.length > MAX_ENTRIES) {
-                    this.locations = this.locations.slice(0, MAX_ENTRIES);
-                }
-                
-                console.log('Initialized with', this.locations.length, 'locations');
-                console.log('Newest:', this.locations[0]?.timestamp);
-                console.log('Oldest:', this.locations[this.locations.length - 1]?.timestamp);
-                
-                this.saveToStorage();
-                return true;
-            } catch (error) {
-                return false;
-            }
-        }
-        return true;
+        return await this.fetchHistory();
     }
 
     // Sort locations by timestamp (newest first)
@@ -62,7 +52,7 @@ class LocationHistoryManager {
         return locations.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
     }
 
-    // Add a new location and remove the oldest if we exceed MAX_ENTRIES
+    // Add a new location (no longer used since we fetch full history)
     addLocation(location, sliderCallback = null) {
         // Get current slider position info before making changes
         let currentTimestamp = null;
@@ -94,8 +84,6 @@ class LocationHistoryManager {
         // Clean up old entries based on time (24 hours ago)
         this.cleanupOldEntries(location.timestamp);
         
-        this.saveToStorage();
-        
         // Return info for slider positioning
         return {
             currentTimestamp,
@@ -125,6 +113,21 @@ class LocationHistoryManager {
             return;
         }
 
+        const PREDICTION_WINDOW_MINUTES = 90;
+        const isWithinPredictionWindow = (pred, sourceTs) => {
+            const minutesAheadRaw = pred.minutes_ahead ?? pred.minutesAhead;
+            const minutesAhead = Number(minutesAheadRaw);
+            if (Number.isFinite(minutesAhead) && minutesAhead > PREDICTION_WINDOW_MINUTES) {
+                return false;
+            }
+
+            const predTime = new Date(pred.timestamp);
+            const sourceTime = new Date(sourceTs);
+            const diffMinutes = (predTime - sourceTime) / (60 * 1000);
+
+            return diffMinutes <= PREDICTION_WINDOW_MINUTES + 0.01;
+        };
+
         // Group predictions by source_timestamp (rounded to 5-minute intervals)
         const predictionsBySource = {};
         
@@ -136,6 +139,10 @@ class LocationHistoryManager {
                 const rawSourceTs = pred.source_timestamp || pred.timestamp;
                 // Round source timestamp to 5-minute interval to group predictions correctly
                 const sourceTs = this.roundTimestampTo5Minutes(rawSourceTs);
+
+                if (!isWithinPredictionWindow(pred, sourceTs)) {
+                    return;
+                }
                 
                 if (!predictionsBySource[sourceTs]) {
                     predictionsBySource[sourceTs] = [];
@@ -164,6 +171,10 @@ class LocationHistoryManager {
                 const rawSourceTs = pred.source_timestamp || pred.timestamp;
                 // Round source timestamp to 5-minute interval to group predictions correctly
                 const sourceTs = this.roundTimestampTo5Minutes(rawSourceTs);
+
+                if (!isWithinPredictionWindow(pred, sourceTs)) {
+                    return;
+                }
                 
                 if (!predictionsBySource[sourceTs]) {
                     predictionsBySource[sourceTs] = [];
@@ -179,50 +190,8 @@ class LocationHistoryManager {
                 });
             });
         }
-        
-        // Remove the extra 95-minute endpoint: drop the earliest entry so the window
-        // aligns to the most recent 90-minute span (keeps the latest timestamps).
-        // Collect all predictions with their source group reference
-        const allPredictionsWithSource = [];
-        Object.keys(predictionsBySource).forEach(sourceTs => {
-            predictionsBySource[sourceTs].forEach(pred => {
-                allPredictionsWithSource.push({
-                    prediction: pred,
-                    sourceTimestamp: sourceTs
-                });
-            });
-        });
-        
-        // Sort by timestamp to find the earliest entry
-        allPredictionsWithSource.sort((a, b) => 
-            new Date(a.prediction.timestamp) - new Date(b.prediction.timestamp)
-        );
-        
-        // Remove the earliest entry (shifts range forward by 5 minutes)
-        if (allPredictionsWithSource.length > 0) {
-            const earliestPrediction = allPredictionsWithSource[0];
-            const sourceTs = earliestPrediction.sourceTimestamp;
-            const predToRemove = earliestPrediction.prediction;
-            
-            // Remove the prediction from its source group
-            const sourceGroup = predictionsBySource[sourceTs];
-            if (sourceGroup) {
-                const index = sourceGroup.findIndex(p => 
-                    p.timestamp === predToRemove.timestamp &&
-                    p.latitude === predToRemove.latitude &&
-                    p.longitude === predToRemove.longitude
-                );
-                if (index !== -1) {
-                    sourceGroup.splice(index, 1);
-                }
-                // Remove empty source groups (shouldn't happen, but just in case)
-                if (sourceGroup.length === 0) {
-                    delete predictionsBySource[sourceTs];
-                }
-            }
-        }
-        
-        // Store grouped predictions (now without the 95-minute entry)
+
+        // Store grouped predictions (capped to the 90-minute window)
         this.predictionsBySource = predictionsBySource;
         
         // Also keep flat array for backward compatibility
@@ -485,10 +454,9 @@ class LocationHistoryManager {
         }
     }
 
-    // Clear all stored locations
+    // Clear all stored locations (no longer uses sessionStorage)
     clear() {
         this.locations = [];
-        sessionStorage.removeItem(STORAGE_KEY);
     }
 }
 

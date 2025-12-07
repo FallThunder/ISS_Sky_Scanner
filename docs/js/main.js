@@ -37,6 +37,7 @@ let map = null;
 let issMarker = null;
 let currentISSLocation = null;
 let isCurrentLocationLoaded = false;
+let isInitialLoad = true; // Track if this is the first time loading data
 
 // Prediction display variables
 let predictionPath = []; // Array of polylines for world copies
@@ -169,9 +170,32 @@ function initMap() {
     }).addTo(map);
 
     // Listen for map view changes to redraw prediction paths for world copies
+    // and to update which ISS marker shows the popup
     map.on('moveend', () => {
         if (predictionsVisible) {
             updatePredictionDisplay();
+        }
+        
+        // Update popup to show on marker closest to viewport center
+        if (issMarker && Array.isArray(issMarker) && issMarker.length > 0) {
+            const center = map.getCenter();
+            const closestMarker = issMarker.reduce((prev, curr) => {
+                const prevDist = Math.abs(prev.getLatLng().lng - center.lng);
+                const currDist = Math.abs(curr.getLatLng().lng - center.lng);
+                return currDist < prevDist ? curr : prev;
+            });
+            
+            // Only open popup if one of the markers has a popup bound
+            if (closestMarker && closestMarker.getPopup()) {
+                // Close all other popups first
+                issMarker.forEach(marker => {
+                    if (marker !== closestMarker && marker.getPopup()) {
+                        marker.closePopup();
+                    }
+                });
+                // Open popup on closest marker
+                closestMarker.openPopup();
+            }
         }
     });
 
@@ -425,15 +449,25 @@ async function fetchISSDataWithRetry() {
         // Update actual locations map for accuracy comparison
         updateActualLocations(data);
         
-        const addResult = updateUI(data);
+        // Check if user is viewing "now" (most recent position) before updating
+        const filledHistoryCount = locationHistory.getFilledHistoryCount();
+        const slider = document.getElementById('history-slider');
+        const isViewingNow = !slider || parseInt(slider.value) === filledHistoryCount - 1;
+        
+        // Update UI (but don't pan map if this is not initial load)
+        const addResult = updateUI(data, !isInitialLoad);
         
         // Update slider range
         historySlider.updateSliderRange();
         
-        // Always move to newest entry when new data loads
-                    const filledHistoryCount = locationHistory.getFilledHistoryCount();
-                    historySlider.setSliderValue(filledHistoryCount - 1, true);
-        console.log('New data loaded - moved slider to newest entry at position:', filledHistoryCount - 1);
+        // Only move to newest entry if user is currently viewing "now" or if it's initial load
+        if (isViewingNow || isInitialLoad) {
+            const newFilledHistoryCount = locationHistory.getFilledHistoryCount();
+            historySlider.setSliderValue(newFilledHistoryCount - 1, true);
+            console.log('New data loaded - moved slider to newest entry at position:', newFilledHistoryCount - 1);
+        } else {
+            console.log('User is viewing history, keeping slider position');
+        }
         
         // Hide any previous error messages
         document.getElementById('error').style.display = 'none';
@@ -811,12 +845,12 @@ function updateMapFromHistory(location) {
     
     map.panTo([lat, targetLng]);
     
-    // Open popup on the marker closest to center
+    // Open popup on the marker closest to the target position (not current center)
     // Open popup for any location (historical, current, or prediction)
     if (issMarker.length > 0) {
         const closestMarker = issMarker.reduce((prev, curr) => {
-            const prevDist = Math.abs(prev.getLatLng().lng - center.lng);
-            const currDist = Math.abs(curr.getLatLng().lng - center.lng);
+            const prevDist = Math.abs(prev.getLatLng().lng - targetLng);
+            const currDist = Math.abs(curr.getLatLng().lng - targetLng);
             return currDist < prevDist ? curr : prev;
         });
         closestMarker.openPopup();
@@ -1006,9 +1040,20 @@ function updatePredictionDisplay() {
     const bounds = map.getBounds();
     const west = bounds.getWest();
     const east = bounds.getEast();
+    const center = bounds.getCenter();
     predictionPath = [];
     
-    for (let offset = -720; offset <= 720; offset += 360) {
+    // Calculate which world copy to center on based on current view
+    // Find the best starting offset to ensure paths are visible in current viewport
+    let baseOffset = 0;
+    if (normalizedPoints.length > 0) {
+        const firstLon = normalizedPoints[0][1];
+        // Find offset that brings the path closest to viewport center
+        baseOffset = Math.round((center.lng - firstLon) / 360) * 360;
+    }
+    
+    // Draw paths for current view and adjacent world copies
+    for (let offset = baseOffset - 720; offset <= baseOffset + 720; offset += 360) {
         const offsetPathPoints = normalizedPoints.map(point => [point[0], point[1] + offset]);
         const polyline = L.polyline(offsetPathPoints, {
             color: '#FF6B6B',
@@ -1088,8 +1133,8 @@ function updatePredictionDisplay() {
 }
 
 // Update the UI with ISS data
-function updateUI(data) {
-    console.log('updateUI: Called with data:', data);
+function updateUI(data, skipMapPan = false) {
+    console.log('updateUI: Called with data:', data, 'skipMapPan:', skipMapPan);
     
     if (!data || !data.latitude || !data.longitude) {
         console.error('updateUI: Invalid data - missing latitude/longitude', data);
@@ -1192,20 +1237,33 @@ function updateUI(data) {
             issMarker.push(marker);
         }
 
-        // Find the closest marker to center for panning
-        let targetLng = lon;
-        while (targetLng < center.lng - 180) targetLng += 360;
-        while (targetLng > center.lng + 180) targetLng -= 360;
-        
-        map.panTo([lat, targetLng]);
-        
-        if (data.location && issMarker.length > 0) {
-            const closestMarker = issMarker.reduce((prev, curr) => {
-                const prevDist = Math.abs(prev.getLatLng().lng - center.lng);
-                const currDist = Math.abs(curr.getLatLng().lng - center.lng);
-                return currDist < prevDist ? curr : prev;
+        // Only pan map and open popup on initial load or when user is viewing "now"
+        if (!skipMapPan) {
+            // Find the closest marker to center for panning
+            let targetLng = lon;
+            while (targetLng < center.lng - 180) targetLng += 360;
+            while (targetLng > center.lng + 180) targetLng -= 360;
+            
+            map.panTo([lat, targetLng]);
+            
+            // Update prediction display after map finishes panning (on initial load)
+            // This ensures paths are drawn relative to the correct viewport
+            map.once('moveend', () => {
+                if (predictionsVisible) {
+                    updatePredictionDisplay();
+                }
             });
-            closestMarker.openPopup();
+            
+            if (data.location && issMarker.length > 0) {
+                const closestMarker = issMarker.reduce((prev, curr) => {
+                    const prevDist = Math.abs(prev.getLatLng().lng - targetLng);
+                    const currDist = Math.abs(curr.getLatLng().lng - targetLng);
+                    return currDist < prevDist ? curr : prev;
+                });
+                closestMarker.openPopup();
+            }
+        } else {
+            console.log('updateUI: Skipping map pan - auto-refresh with user viewing history');
         }
         
         console.log('updateUI: Completed successfully');
@@ -1287,45 +1345,24 @@ async function fetchPredictionsData() {
                 }
             }
             
-                    // Update prediction display on map
-                    updatePredictionDisplay();
-                    
-                    // Wait for map rendering to complete before hiding loading screen
-                    // Use requestAnimationFrame twice to ensure rendering is complete
-                    requestAnimationFrame(() => {
-                        requestAnimationFrame(() => {
-                            // Hide loading animation now that predictions are ready and rendered
-                            hidePredictionsLoading();
-                        });
-                    });
-                    
-                    console.log('fetchPredictionsData: Completed successfully');
+            // Update prediction display on map
+            updatePredictionDisplay();
+            
+            console.log('fetchPredictionsData: Completed successfully');
         } else {
             console.warn('fetchPredictionsData: No predictions data in response');
             locationHistory.setPredictionsFromAPI(null);
             // Clear prediction display if no predictions
             updatePredictionDisplay();
-            // Wait for rendering to complete
-            requestAnimationFrame(() => {
-                requestAnimationFrame(() => {
-                    hidePredictionsLoading();
-                });
-            });
         }
         
     } catch (error) {
         console.error('fetchPredictionsData: Error caught:', error);
         console.error('fetchPredictionsData: Error stack:', error.stack);
-                // Don't show error to user for predictions - it's background loading
-                locationHistory.setPredictionsFromAPI(null);
-                // Clear prediction display on error
-                updatePredictionDisplay();
-                // Wait for rendering to complete
-                requestAnimationFrame(() => {
-                    requestAnimationFrame(() => {
-                        hidePredictionsLoading();
-                    });
-                });
+        // Don't show error to user for predictions - it's background loading
+        locationHistory.setPredictionsFromAPI(null);
+        // Clear prediction display on error
+        updatePredictionDisplay();
     }
 }
 
@@ -1350,7 +1387,7 @@ async function fetchISSData() {
         updateActualLocations(data);
         console.log('fetchISSData: About to call updateUI with data:', data);
         console.log('fetchISSData: historySlider exists?', !!historySlider);
-        updateUI(data);
+        updateUI(data, false); // Don't skip map pan on initial load
         
         if (historySlider) {
             historySlider.updateSliderRange();
@@ -1363,6 +1400,17 @@ async function fetchISSData() {
         document.getElementById('error').style.display = 'none';
         console.log('fetchISSData: Completed successfully');
         
+        // Mark that initial load is complete and hide loading animation
+        if (isInitialLoad) {
+            isInitialLoad = false;
+            // Wait for map rendering to complete before hiding loading screen
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                    hidePredictionsLoading();
+                });
+            });
+        }
+        
         // Predictions are fetched in parallel in init(), or separately in fetchISSDataWithRetry()
         // No need to call here to avoid duplicate calls
         
@@ -1373,6 +1421,15 @@ async function fetchISSData() {
             'Failed to fetch initial ISS data. Auto-refresh will continue.',
             `Error: ${error.message}`
         );
+        // Mark initial load as complete even on error and hide loading animation
+        if (isInitialLoad) {
+            isInitialLoad = false;
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                    hidePredictionsLoading();
+                });
+            });
+        }
     }
 }
 

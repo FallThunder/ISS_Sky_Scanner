@@ -1,736 +1,469 @@
-Here’s a “from-scratch” spec you can hand to Cursor. It keeps the same APIs and behavior, but treats this as a brand-new greenfield frontend, not a refactor of existing code.
+# ISS Sky Scanner
+
+## Greenfield Frontend Specification (Authoritative)
 
 ---
 
-# ISS Sky Scanner – Greenfield Frontend Specification
+## 1. Executive Summary
 
-## 1. Overview
+Build a static, browser-only frontend for **ISS Sky Scanner** that visualizes International Space Station position data and prediction comparisons using **precomputed backend data only**.
 
-Build a **static, client-side web application** that visualizes the current and historical position of the ISS and compares actual positions against prediction models.
+**The frontend performs zero orbital math or prediction logic.**
+All coordinates—historical, current, and predicted—are fetched from backend APIs and rendered as-is.
 
-Key characteristics:
+The application consists of two fully isolated views:
 
-* Pure frontend (static files, no server-side code).
-* No global app state shared between pages.
-* Each page is **self-contained** and **fetches its own data**.
-* Minimal dependencies: **Leaflet** for maps, **Chart.js** for charts, vanilla JS modules for logic.
+* **Map View** – Real-time ISS location with 24h history and 90-minute future predictions.
+* **Metrics View** – Comparison of recent actual positions against predictions made 30, 60, and 90 minutes earlier.
 
 ---
 
-## 2. Tech Stack & Project Structure
+## 2. Core Architectural Principles
 
-### 2.1 Tech Stack
+### 2.1 Page Isolation
 
-* **HTML/CSS/JavaScript (ES6 modules, no bundler required)**
-* **Leaflet** for mapping
-* **Chart.js** for charts
-* Target browsers: latest Chrome, Firefox, Safari
+* Map page and Metrics page are **independent modules**
+* No shared JavaScript state between pages
+* No global mutable objects
+* Each page:
 
-### 2.2 File Structure
+  * Fetches its own data
+  * Manages its own timers
+  * Cleans up fully on exit
+
+✅ Fresh data on every page switch
+✅ No race conditions
+✅ Predictable lifecycle
+✅ Easier testing and debugging
+
+---
+
+### 2.2 Frontend Responsibility Boundary
+
+**Backend**
+
+* Computes ISS positions
+* Computes all predictions
+* Determines prediction intervals
+
+**Frontend**
+
+* Fetches backend data
+* Parses and normalizes JSON
+* Sorts / groups by timestamps (for UI only)
+* Renders maps, sliders, and charts
+
+🚫 No prediction computation
+🚫 No interpolation or extrapolation
+🚫 No orbital mechanics in the browser
+
+---
+
+## 3. Technology Stack
+
+* **HTML5 / CSS3**
+* **JavaScript (ES Modules, no build step)**
+* **Leaflet.js** – Maps
+* **Chart.js** – Metrics graphs
+* **Static hosting** (GitHub Pages / GCS / similar)
+
+Target browsers:
+
+* Chrome (latest)
+* Firefox (latest)
+* Safari (latest)
+
+---
+
+## 4. Project Structure
 
 ```text
 docs/
-├── index.html                 # Single-page shell with tab navigation
+├── index.html                 # App shell + navigation
 ├── css/
-│   └── styles.css             # All layout and visual styles
+│   └── styles.css             # Global styles
 ├── js/
-│   ├── config.js              # API endpoints and constants
+│   ├── config.js              # API URLs & constants
 │   ├── shared/
-│   │   ├── api-client.js      # Fetch wrapper, errors, retry
-│   │   ├── date-utils.js      # Date & time helpers
+│   │   ├── api-client.js      # Fetch + retry + errors
+│   │   ├── date-utils.js      # Formatting helpers
 │   │   └── map-utils.js       # Leaflet helpers
 │   ├── map-page/
-│   │   ├── map-controller.js  # Page controller
-│   │   ├── location-manager.js# Data transformation for map
-│   │   └── history-slider.js  # Slider and time navigation
+│   │   ├── map-controller.js
+│   │   ├── location-manager.js
+│   │   └── history-slider.js
 │   ├── metrics-page/
-│   │   ├── metrics-controller.js  # Page controller
-│   │   └── chart-manager.js       # Chart.js setup & updates
+│   │   ├── metrics-controller.js
+│   │   └── chart-manager.js
 │   └── widgets/
-│       ├── message-banner.js  # Site-wide banner
-│       └── feedback-widget.js # Feedback UI & submission
+│       ├── message-banner.js
+│       └── feedback-widget.js
 └── assets/
     └── iss-icon.svg
 ```
 
-* `index.html` contains both main views: **Map** and **Metrics**, shown/hidden via JS.
-* Navigation is handled client-side via hash (`#map`, `#metrics`).
-
 ---
 
-## 3. Configuration & APIs
+## 5. API Configuration (Browser-Facing)
 
-### 3.1 `config.js`
+### 5.1 config.js
 
 ```js
 export const API_CONFIG = {
-  CURRENT_LOCATION_URL: 'https://iss-api-bff-web-cklav7ht2q-ue.a.run.app',
-  PREDICTIONS_URL: 'https://iss-api-bff-web-predictions-cklav7ht2q-ue.a.run.app',
-  HISTORY_RANGE_URL: 'https://us-east1-iss-sky-scanner-20241222.cloudfunctions.net/iss_api_query_time_range',
-  LOCATION_QUERY_URL: 'https://us-east1-iss-sky-scanner-20241222.cloudfunctions.net/iss_api_query_loc_history',
-  CHAT_URL: 'https://us-east1-iss-sky-scanner-20241222.cloudfunctions.net/iss_api_query_assistant',
-  FEEDBACK_URL: 'https://us-east1-iss-sky-scanner-20241222.cloudfunctions.net/iss_api_store_feedback',
-  MESSAGE_URL: 'https://storage.googleapis.com/iss_sky_scanner_site_message/website_message.txt',
+  HISTORY_RANGE_URL:
+    'https://us-east1-iss-sky-scanner-20241222.cloudfunctions.net/iss_api_query_time_range',
+
+  CURRENT_LOCATION_URL:
+    'https://iss-api-bff-web-cklav7ht2q-ue.a.run.app/',
+
+  PREDICTIONS_URL:
+    'https://iss-api-bff-web-predictions-cklav7ht2q-ue.a.run.app/',
+
   API_KEY: 'BY4FlGM1Kau2eHP6sJR9AiLuvg81ckGo'
 };
 ```
 
-### 3.2 API Usage by Page
-
-#### Map Page
-
-1. **Current ISS Location** (every 5 minutes)
-
-   * `GET CURRENT_LOCATION_URL?api_key={API_KEY}`
-   * Response:
-
-     ```json
-     {
-       "timestamp": "2024-01-15T10:25:00Z",
-       "latitude": "45.1234",
-       "longitude": "-122.5678",
-       "location": "Portland, Oregon, USA",
-       "country_code": "US",
-       "fun_fact": "Portland is known as..."
-     }
-     ```
-
-2. **24-Hour History** (once on page init)
-
-   * `GET HISTORY_RANGE_URL?minutes=1440`
-   * Returns an array of 288 location objects (5-minute intervals).
-
-3. **90-Minute Predictions** (on init, and after each location refresh)
-
-   * `GET PREDICTIONS_URL?api_key={API_KEY}`
-   * Response:
-
-     ```json
-     {
-       "status": "success",
-       "predictions": {
-         "orbital_mechanics": [...],
-         "sgp4": [...]
-       }
-     }
-     ```
-
-#### Metrics Page
-
-1. **90-Minute Location History**
-
-   * `GET HISTORY_RANGE_URL?minutes=90`
-   * 19 entries (0–90 min in 5-minute steps).
-
-2. **Historical Predictions**
-
-   * `GET PREDICTIONS_URL?api_key={API_KEY}&historical=true`
-   * Response:
-
-     ```json
-     {
-       "status": "success",
-       "historical_predictions": {
-         "predictions_90min_ago": [...],
-         "predictions_60min_ago": [...],
-         "predictions_30min_ago": [...]
-       }
-     }
-     ```
-
-#### Shared Widgets
-
-* **Message banner:** `GET MESSAGE_URL` (plain text).
-* **Feedback submission:** `POST FEEDBACK_URL`.
-* **Chat:** out of scope for now (endpoint exists but UI disabled).
-
 ---
 
-## 4. Data Models
+## 6. Data Models (Normalized Frontend Types)
+
+### 6.1 Location
 
 ```ts
 interface Location {
-  timestamp: string;       // ISO 8601
+  timestamp: string;        // ISO 8601
   latitude: number;
   longitude: number;
   location?: string;
   countryCode?: string;
   funFact?: string;
-  isEmpty?: boolean;       // Placeholder when data is missing
+  isEmpty?: boolean;        // gaps in history
 }
+```
 
+---
+
+### 6.2 Prediction
+
+> Predictions are **never computed** in the frontend.
+> This model represents backend output only.
+
+```ts
 interface Prediction {
-  timestamp: string;       // prediction time
+  timestamp: string;        // predicted target time
   latitude: number;
   longitude: number;
-  method: 'orbital_mechanics' | 'sgp4';
-  minutesAhead: number;
-  sourceTimestamp: string; // when the prediction was generated
-}
-
-interface PredictionGroup {
-  timestamp: string;      // rounded to nearest 5-minute interval
-  centroidLat: number;
-  centroidLon: number;
-  predictions: Prediction[];
+  method?: 'orbital_mechanics' | 'sgp4';
+  minutesAhead?: number;    // supplied or inferred for labeling only
+  sourceTimestamp: string; // when prediction was made
 }
 ```
 
-Map page and Metrics page transform raw API shapes into these normalized models before rendering.
+---
+
+## 7. API Usage by Page
+
+### 7.1 Map Page APIs
+
+1. **24-Hour History**
+
+```text
+GET ?minutes=1440
+```
+
+2. **Current Location**
+
+```text
+GET /?api_key=API_KEY
+```
+
+3. **Live Predictions (90 min future)**
+
+```text
+GET /?api_key=API_KEY
+```
 
 ---
 
-## 5. Application Architecture
+### 7.2 Metrics Page APIs
 
-### 5.1 Page Isolation
+1. **90-Minute Actual History**
 
-* Two logical pages:
+```text
+GET ?minutes=90
+```
 
-  * **Map View** (`view-map`)
-  * **Metrics View** (`view-metrics`)
-* Each page has its own controller:
+2. **Historical Predictions**
 
-  * `MapController`
-  * `MetricsController`
-* No shared JavaScript state between pages:
+```text
+GET /?api_key=API_KEY&historical=true
+```
 
-  * No global arrays or shared history objects.
-  * No cross-page references.
+---
 
-On navigation:
+## 8. Normalization Rules (Critical)
 
-1. Current controller’s `destroy()` is called.
-2. DOM for previous view remains but is hidden.
-3. New controller is created and `init()` is called.
+### 8.1 History Range Normalization
 
-### 5.2 Navigation & Routing (index.html)
+* Sort ascending by timestamp
+* Deduplicate timestamps
+* Prefer non-empty records over `isEmpty=true`
+* Preserve gaps (`isEmpty`) for slider visualization
+* **Frontend never fills missing points**
 
-* Tabs at the top:
+---
 
-  * `<button class="nav-tab" data-view="map">Map</button>`
-  * `<button class="nav-tab" data-view="metrics">Metrics</button>`
-* JS in `index.html` (module script):
+### 8.2 Prediction Normalization
+
+* Use backend coordinates verbatim
+* No resampling
+* No smoothing
+* No interpolation
+* `minutesAhead` is used **only for labels and grouping**
+
+---
+
+## 9. Navigation & Routing
+
+* Single HTML shell with tab navigation
+* Views shown / hidden via CSS
+* URL hash controls routing:
+
+  * `#map`
+  * `#metrics`
+
+### Page Switching Rules
+
+1. Destroy active page controller
+2. Clear timers & event listeners
+3. Initialize new page controller
+4. Fetch data fresh
+
+---
+
+## 10. Map Page Specification
+
+### 10.1 Features
+
+✅ Leaflet dark-themed world map
+✅ ISS marker with popup
+✅ 24-hour history path
+✅ 90-minute future prediction path (dashed)
+✅ International date line handling
+✅ World-wrap rendering
+
+---
+
+### 10.2 History & Prediction Slider
+
+* Domain:
+
+  * All history points + prediction points
+* Index represents **actual backend points only**
+* “Now” marker at latest real location
+* Labels:
+
+  * Local time
+  * UTC time
+  * Prediction indicator for future points
+
+---
+
+### 10.3 Controls
+
+* Jump: `-24h`, `Now`, `+90m`
+* Step: ±5m, ±15m, ±30m, ±1h
+* Buttons auto-disable at bounds
+
+---
+
+### 10.4 Auto-Refresh
+
+* Current location refresh every 5 minutes
+* Retry:
+
+  * 7s interval
+  * Max 5 attempts
+* Stop retrying 60s before next scheduled refresh
+
+---
+
+### 10.5 State Management
 
 ```js
-let currentController = null;
-let currentPage = null;
+class MapController {
+  currentLocation = null;
+  history = [];
+  predictions = [];
+  sliderIndex = null;
+  autoRefreshTimer = null;
 
-async function switchToPage(pageName) {
-  document.querySelectorAll('.view').forEach(v =>
-    v.classList.remove('active')
-  );
-
-  if (currentController?.destroy) {
-    currentController.destroy();
-    currentController = null;
-  }
-
-  const view = document.getElementById(`view-${pageName}`);
-  view.classList.add('active');
-
-  if (pageName === 'map') {
-    const { MapController } = await import('./js/map-page/map-controller.js');
-    currentController = new MapController();
-  } else if (pageName === 'metrics') {
-    const { MetricsController } = await import('./js/metrics-page/metrics-controller.js');
-    currentController = new MetricsController();
-  }
-
-  await currentController.init();
-  currentPage = pageName;
-  window.location.hash = pageName;
+  async init() {}
+  destroy() {}
 }
-
-document.querySelectorAll('.nav-tab').forEach(tab => {
-  tab.addEventListener('click', () => switchToPage(tab.dataset.view));
-});
-
-window.addEventListener('popstate', () => {
-  const page = window.location.hash.slice(1) || 'map';
-  switchToPage(page);
-});
-
-window.addEventListener('load', () => {
-  const initialPage = window.location.hash.slice(1) || 'map';
-  switchToPage(initialPage);
-});
 ```
 
 ---
 
-## 6. Map Page Specification
+## 11. Metrics Page Specification
 
-### 6.1 Required Data
+### 11.1 Features
 
-```ts
-{
-  currentLocation: Location | null;
-  history: Location[];      // 288 entries (past 24h)
-  predictions: PredictionGroup[]; // next 90 min in 5-min steps
-}
-```
+✅ Latitude or Longitude vs time graph
+✅ True historical path
+✅ Prediction overlays:
 
-### 6.2 Features
+* Predicted 90 min ago
+* Predicted 60 min ago
+* Predicted 30 min ago
 
-1. **Interactive Map**
+✅ Metrics comparison map
+✅ Toggle legend controls
 
-   * Leaflet map with a dark basemap.
-   * ISS marker with popup:
+---
 
-     * Coordinates (formatted with N/S, E/W).
-     * Location name.
-     * Country flag emoji.
-   * World-wrap: markers on all visible world copies.
-   * “Center on ISS” button.
-   * Prediction path as a dashed polyline.
+### 11.2 Charts
 
-2. **History & Future Slider**
+* Chart.js
+* X axis: time from -90 → 0 minutes
+* Y axis: latitude or longitude
+* Tooltips:
 
-   * Range covers:
+  * Value (4 decimals)
+  * Local + UTC timestamp
 
-     * 24h past (288 points) + 90min future (18 points) = 306 positions.
-   * Position index mapping:
+---
 
-     * `0` → 24 hours ago.
-     * `287` → “Now” (current location).
-     * `288–305` → prediction steps.
-   * Display:
-
-     * Local time and UTC time for selected point.
-     * Indicator when selecting a prediction (future).
-
-3. **Navigation Controls**
-
-   * Jump buttons:
-
-     * `-24h`, `Now`, `+90m`.
-   * Step controls:
-
-     * `◀` / `▶` (±5 min).
-     * `-15m` / `+15m`.
-     * `-30m` / `+30m`.
-     * `-1h` / `+1h`.
-   * All buttons disabled at range boundaries.
-
-4. **Info Cards**
-
-   * Coordinate display: `45.1234° N, 122.5678° W`.
-   * Location name + country flag.
-   * “Last updated” timestamp (local + UTC).
-   * Fun fact text.
-
-5. **Prediction Legend**
-
-   * Toggle to show/hide prediction path.
-   * Visual state indicating whether predictions are visible.
-
-6. **Auto-Refresh**
-
-   * Fetch new current location every 5 minutes.
-   * Behavior:
-
-     * Align to real time (xx:x0 or xx:x5 style intervals, as appropriate).
-     * After each successful fetch:
-
-       * Update `currentLocation`.
-       * Shift `history` if needed.
-       * Recompute prediction groups.
-       * Update map and slider.
-   * Retry logic:
-
-     * On failure, retry every 7s up to 5 attempts.
-     * Stop retrying 60s before next scheduled refresh window.
-
-7. **Error Handling**
-
-   * User-friendly error message on failures.
-   * If refresh fails but existing `currentLocation` exists:
-
-     * Show warning and keep last known position.
-   * Empty-state message if no history is available.
-
-### 6.3 Map Page State Management
+### 11.3 State Management
 
 ```js
-export class MapController {
-  constructor() {
-    this.currentLocation = null;
-    this.history = [];
-    this.predictions = [];
-    this.sliderPosition = 287;
-    this.autoRefreshTimer = null;
-    this.retryTimer = null;
-    this.isFetching = false;
-    this.map = null;
-    this.mapMarkers = [];
-    this.predictionLayer = null;
-  }
+class MetricsController {
+  historicalLocations = [];
+  predictions30 = [];
+  predictions60 = [];
+  predictions90 = [];
+  charts = {};
+  map = null;
 
-  async init() {
-    this.initUIRefs();            // cache DOM elements
-    this.showLoader('Loading ISS data...');
-    await Promise.all([
-      this.loadHistory(),
-      this.loadCurrentLocation(),
-      this.loadPredictions()
-    ]);
-    this.initMap();
-    this.initSlider();
-    this.initControls();
-    this.updateUIFromSlider();
-    this.startAutoRefresh();
-    this.hideLoader();
-  }
-
-  destroy() {
-    clearTimeout(this.autoRefreshTimer);
-    clearTimeout(this.retryTimer);
-    if (this.map) {
-      this.map.remove();
-      this.map = null;
-    }
-    // Remove event listeners as needed.
-  }
-}
-```
-
-Implementation details:
-
-* `loadHistory()`: uses `ApiClient` to fetch 24h data and normalize into `Location[]`.
-* `loadCurrentLocation()`: fetches current location and sets `sliderPosition = 287`.
-* `loadPredictions()`: fetches predictions, groups into `PredictionGroup[]`.
-* `updateUIFromSlider()`: chooses data source (history vs predictions) and updates map + cards.
-
----
-
-## 7. Metrics Page Specification
-
-### 7.1 Required Data
-
-```ts
-{
-  historicalLocations: Location[];   // last 90 min, 19 entries
-  predictions90: Prediction[];       // predicted positions made 90 min ago
-  predictions60: Prediction[];       // predicted positions made 60 min ago
-  predictions30: Prediction[];       // predicted positions made 30 min ago
-}
-```
-
-### 7.2 Features
-
-1. **Graph Selector**
-
-   * Dropdown to choose:
-
-     * “Latitude vs Time”
-     * “Longitude vs Time”
-   * Only one chart visible at a time.
-
-2. **Charts (Chart.js)**
-
-   * X-axis: time in minutes from now (`-90, -85, ..., 0`).
-   * Y-axis:
-
-     * Latitude: `[-90, 90]`.
-     * Longitude: `[-180, 180]`.
-   * Datasets:
-
-     * Historical actual path: solid red.
-     * Prediction paths:
-
-       * 90 min ago (dashed orange).
-       * 60 min ago (dashed gold).
-       * 30 min ago (dashed yellow).
-   * Tooltips show:
-
-     * Value (4 decimal places).
-     * Local + UTC timestamps.
-   * Legend supports click-to-toggle dataset visibility.
-
-3. **Metrics Map**
-
-   * Leaflet dark basemap.
-   * Paths:
-
-     * Actual historical path (solid red).
-     * Predicted paths in different dashed colors.
-   * World-wrap handling for dateline crossing.
-   * Auto-fit bounds to show all paths.
-
-4. **Path Legend**
-
-   * Checkboxes:
-
-     * True historical path
-     * Predicted 90 min ago
-     * Predicted 60 min ago
-     * Predicted 30 min ago
-   * Toggling affects both map and chart visibility.
-
-5. **Empty & Partial Data States**
-
-   * If any prediction series is missing:
-
-     * Show notice but render available data.
-   * If core historical data missing:
-
-     * Show empty-state message with retry option.
-
-### 7.3 Metrics Page State Management
-
-```js
-export class MetricsController {
-  constructor() {
-    this.historicalLocations = [];
-    this.predictions90 = [];
-    this.predictions60 = [];
-    this.predictions30 = [];
-    this.charts = { latitude: null, longitude: null };
-    this.map = null;
-    this.layers = {
-      historical: null,
-      pred90: null,
-      pred60: null,
-      pred30: null
-    };
-    this.pathVisibility = {
-      historical: true,
-      pred90: true,
-      pred60: true,
-      pred30: true
-    };
-  }
-
-  async init() {
-    this.initUIRefs();
-    this.showLoader('Loading metrics...');
-    await Promise.all([
-      this.loadHistoricalData(),
-      this.loadHistoricalPredictions()
-    ]);
-    this.initCharts();
-    this.initMap();
-    this.renderCharts();
-    this.renderMapPaths();
-    this.initLegendControls();
-    this.hideLoader();
-  }
-
-  destroy() {
-    Object.values(this.charts).forEach(c => c?.destroy?.());
-    if (this.map) {
-      this.map.remove();
-      this.map = null;
-    }
-  }
+  async init() {}
+  destroy() {}
 }
 ```
 
 ---
 
-## 8. Shared Modules
+## 12. Shared Components
 
-### 8.1 `api-client.js`
+### 12.1 ApiClient
 
-Responsibilities:
-
-* Wrap `fetch` with:
-
-  * JSON parsing.
-  * Error handling with `ApiError`.
-  * Optional retry with exponential backoff.
-  * Optional timeout.
-
-Sketch:
-
-```js
-export class ApiError extends Error {
-  constructor(message, statusCode, response) {
-    super(message);
-    this.statusCode = statusCode;
-    this.response = response;
-  }
-}
-
-export class ApiClient {
-  static async fetchJson(url, options = {}) {
-    const controller = new AbortController();
-    const timeout = options.timeout ?? 10000;
-    const id = setTimeout(() => controller.abort(), timeout);
-
-    try {
-      const res = await fetch(url, { ...options, signal: controller.signal });
-      if (!res.ok) {
-        throw new ApiError(`API returned ${res.status}`, res.status, await res.text());
-      }
-      return await res.json();
-    } finally {
-      clearTimeout(id);
-    }
-  }
-
-  static async fetchWithRetry(url, { retries = 3, retryDelayMs = 500, ...opts } = {}) {
-    let attempt = 0;
-    while (true) {
-      try {
-        return await this.fetchJson(url, opts);
-      } catch (err) {
-        attempt++;
-        if (attempt > retries) throw err;
-        await new Promise(r => setTimeout(r, retryDelayMs * attempt));
-      }
-    }
-  }
-}
-```
-
-### 8.2 `date-utils.js`
-
-Responsibilities:
-
-* Round timestamps to nearest 5 minutes (UTC).
-* Format timestamps for UI (`"Jan 15, 2024 10:25 AM Local\nJan 15, 2024 6:25 PM UTC"`).
-* Format coordinates with N/S, E/W.
-* Country code → flag emoji.
-
-### 8.3 `map-utils.js`
-
-Responsibilities:
-
-* Initialize Leaflet maps with dark tiles.
-* Create ISS markers with custom icon.
-* Handle world-wrap (duplicate markers on wrapped worlds).
-* Normalize coordinate paths that cross the dateline.
-* Draw prediction paths as polylines.
+* Timeout
+* Retry with backoff
+* Consistent error handling
 
 ---
 
-## 9. Widgets
+### 12.2 DateUtils
 
-### 9.1 Message Banner (`message-banner.js`)
-
-* On `DOMContentLoaded`:
-
-  * Fetch banner text from `MESSAGE_URL`.
-  * If non-empty, display at top of page with dismiss button.
-* Methods:
-
-  * `init()`, `show(message)`, `hide()`.
-
-### 9.2 Feedback Widget (`feedback-widget.js`)
-
-* Star rating (e.g., 1–5).
-* Free-text field with character limit & counter.
-* Submit button:
-
-  * Validates rating + text.
-  * Sends `POST` to `FEEDBACK_URL`.
-  * Shows success or error confirmation.
+* Timestamp formatting
+* Coordinate formatting
+* Country code → flag emoji
 
 ---
 
-## 10. UX, Responsiveness & Accessibility
+### 12.3 MapUtils
 
-### 10.1 Responsive Layout
-
-* **Mobile first**:
-
-  * Map is full-width with controls stacked.
-  * Charts are full-width, legends below.
-* **Desktop**:
-
-  * Map + info cards side-by-side.
-  * Metrics: chart and map can be stacked or side-by-side depending on width.
-
-### 10.2 Accessibility
-
-* ARIA labels for all controls.
-* Keyboard navigation:
-
-  * Tab order logical.
-  * Space/Enter activate buttons and toggle checkboxes.
-* Visible focus outline for interactive elements.
-* Screen-reader updates on:
-
-  * New data arrival.
-  * Error/empty-state messages.
+* Leaflet initialization
+* ISS marker helpers
+* Dateline-safe polyline rendering
+  *(visual correction only, not geodetic changes)*
 
 ---
 
-## 11. Performance Targets
+## 13. Widgets
 
-* Initial map view:
+### 13.1 Message Banner
 
-  * Time to interactive: < 2s.
-  * All initial API calls: < 3s (under normal network conditions).
-* Page switch:
-
-  * DOM view switch: < 100ms.
-  * New data load: < 2s.
-* Chart render: < 500ms for metrics page.
-* Map path drawing: < 300ms.
-* Auto-refresh update (map):
-
-  * Fetch + update with no visible jank.
+* Fetch message text on load
+* Display if non-empty
+* Dismissible
 
 ---
 
-## 12. Testing
+### 13.2 Feedback Widget
 
-### 12.1 Unit Tests (Jest or similar)
-
-* `DateUtils.roundToNearest5Minutes()`.
-* `DateUtils.formatCoordinates()`.
-* `MapUtils.normalizeLongitudePath()`.
-* `ApiClient.fetchWithRetry()` (incl. backoff).
-* Prediction centroid calculations and grouping.
-
-### 12.2 Integration Tests
-
-* MapController lifecycle:
-
-  * `init()` loads data, renders map, slider works.
-  * `destroy()` cleans timers & map.
-* MetricsController lifecycle:
-
-  * `init()` loads data, renders charts & map, legend toggles.
-* Page switching:
-
-  * Repeated switch between `map` and `metrics` produces no memory leaks (no orphan timers, maps, or charts).
-* Auto-refresh behavior:
-
-  * Triggers at correct intervals.
-  * Stops on `destroy()`.
-
-### 12.3 E2E Tests (Playwright or similar)
-
-* Load app → map visible → ISS marker present.
-* Change tabs → metrics view visible → graphs rendered.
-* Move slider → map position and info cards update.
-* Toggle legend → chart/map datasets hide/show.
-* Simulated API failure → error messages & graceful fallback.
+* Star rating
+* Free-text with word count
+* POST to backend
 
 ---
 
-## 13. Scope & Non-Goals
+## 14. Error Handling & Empty States
 
-**Included:**
-
-* Map view with 24h history + 90min predictions.
-* Metrics view with 90min comparison charts + map.
-* Feedback widget and message banner.
-* Page isolation and clean controller lifecycles.
-
-**Out of Scope (future work):**
-
-* Offline support / service workers.
-* WebSocket real-time updates.
-* > 24h historical data visualizations.
-* Custom arbitrary time ranges.
-* Data export (CSV/JSON).
-* Notifications for overhead passes.
-* 3D globe visualization.
+* API failure → friendly message
+* Partial data → render what’s available
+* No crashes on missing prediction sets
+* Clear empty states for Metrics page
 
 ---
 
-If you’d like, I can next generate **starter files** (e.g., `index.html`, `config.js`, stub controllers) in a Cursor-friendly layout so you can drop them directly into your repo.
+## 15. Performance Targets
+
+* Initial map render: < 3s
+* Page switch UI: < 100ms
+* Chart render: < 500ms
+* No memory leaks on repeated navigation
+* 60fps map panning
+
+---
+
+## 16. Testing Strategy
+
+### Unit
+
+* Normalizers
+* Date utils
+* Slider index logic
+
+### Integration
+
+* Controller lifecycle
+* Page switching
+* Auto-refresh behavior
+
+### E2E
+
+* Load → Map visible
+* Switch → Metrics visible
+* Slider moves map
+* Legend toggles paths
+* API failure recovery
+
+---
+
+## 17. Explicit Non-Goals
+
+🚫 Client-side prediction
+🚫 Orbital math in browser
+🚫 Offline mode
+🚫 WebSockets
+🚫 >24h history
+🚫 Data export
+🚫 3D globe
+
+---
+
+## 18. Success Criteria
+
+✅ Pages fully isolated
+✅ All ISS positions originate from backend
+✅ No shared state or globals
+✅ Clean teardown on navigation
+✅ Maps & charts reflect backend truth exactly
+
+---
+
+## **One-Line Rule for Cursor**
+
+> *“The frontend must only visualize backend-provided ISS locations and predictions; it must never calculate, adjust, or invent coordinates.”*
+
+---

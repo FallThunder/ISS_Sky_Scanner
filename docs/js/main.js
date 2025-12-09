@@ -57,7 +57,7 @@ let isFetching = false;
 let lastRefreshTime = null;
 
 const locationHistory = new LocationHistoryManager();
-// Make locationHistory available globally for metrics page
+// Make locationHistory available globally when needed elsewhere
 if (typeof window !== 'undefined') {
     window.locationHistory = locationHistory;
 }
@@ -798,7 +798,7 @@ function updateMapFromHistory(location) {
     updatePredictionDisplay();
 }
 
-// Update prediction display on map (using same approach as metrics page)
+// Update prediction display on map
 function updatePredictionDisplay() {
     if (!map) {
         console.log('updatePredictionDisplay: Map not initialized');
@@ -855,7 +855,7 @@ function updatePredictionDisplay() {
 
     console.log(`updatePredictionDisplay: Processing ${futurePredictions.length} future predictions`);
     
-    // Normalize longitude path for world copies (similar to metrics page)
+    // Normalize longitude path for world copies
     const normalizeLongitudePath = (points) => {
         if (points.length === 0) return points;
         
@@ -903,7 +903,7 @@ function updatePredictionDisplay() {
     
     const normalizedPoints = normalizeLongitudePath(pathCoords);
     
-    // Create polylines for world copies (similar to metrics page)
+    // Create polylines for world copies
     // This shows the predicted path line for all predictions
     const bounds = map.getBounds();
     const west = bounds.getWest();
@@ -1175,24 +1175,7 @@ async function fetchPredictionsData() {
             console.log('fetchPredictionsData: Setting predictions from API...');
             console.log('fetchPredictionsData: Full predictions object:', JSON.stringify(data.predictions, null, 2));
             locationHistory.setPredictionsFromAPI(data.predictions);
-            
-            // Store historical predictions for metrics page
-            if (typeof window !== 'undefined') {
-                window.historicalPredictions = data.historical_predictions || null;
-                console.log('fetchPredictionsData: Storing historical predictions for metrics:', data.historical_predictions ? 'present' : 'null');
-                
-                // Trigger metrics update - call it regardless of whether it exists yet
-                // The function is registered when metrics.js loads, so it should be available
-                setTimeout(() => {
-                    if (typeof window.updateMetricsGraphs === 'function') {
-                        console.log('fetchPredictionsData: Triggering metrics update');
-                        window.updateMetricsGraphs();
-                    } else {
-                        console.log('fetchPredictionsData: updateMetricsGraphs not yet available');
-                    }
-                }, 100);
-            }
-            
+
             // Update prediction display on map
             // On initial load, wait a bit for map to finish positioning
             if (isInitialLoad) {

@@ -18,6 +18,7 @@
     <link rel="stylesheet" href="./css/styles.css">
     <link rel="stylesheet" href="./css/chat.css">
     <link rel="stylesheet" href="./css/message-box.css">
+    <link rel="stylesheet" href="./css/metricsTable.css">
 </head>
 <body>
     <!-- Website Message Box -->
@@ -31,7 +32,7 @@
             <h1>ISS Sky Scanner</h1>
             <nav class="main-nav">
                 <button class="nav-tab active" id="nav-tab-map" data-view="map">Map</button>
-                <button class="nav-tab" id="nav-tab-metrics" data-view="metrics">Metrics</button>
+                <button class="nav-tab" id="nav-tab-metrics-tables" data-view="metrics-tables">Metrics Tables</button>
             </nav>
         </header>
         <main>
@@ -113,64 +114,45 @@
                 </div>
             </div>
             </div>
-            
-            <!-- Metrics View -->
-            <div id="view-metrics" class="view-section" style="display: none;">
-                <div class="card">
-                    <div class="graph-header">
-                        <h2>Historical Location Data</h2>
-                        <div class="custom-dropdown" id="graph-selector">
-                            <div class="dropdown-selected" id="dropdown-selected">
-                                <span class="dropdown-text">
-                                    <i class="fas fa-globe graph-icon latitude-icon"></i>
-                                    Latitude
-                                </span>
-                                <i class="fas fa-chevron-down dropdown-arrow"></i>
-                            </div>
-                            <div class="dropdown-options" id="dropdown-options">
-                                <div class="dropdown-option" data-value="latitude">
-                                    <i class="fas fa-globe graph-icon latitude-icon"></i>
-                                    Latitude
-                                </div>
-                                <div class="dropdown-option" data-value="longitude">
-                                    <i class="fas fa-globe graph-icon longitude-icon"></i>
-                                    Longitude
-                                </div>
-                            </div>
-                        </div>
+            <div id="view-metrics-tables" class="view-section" style="display: none;">
+                <div class="card metrics-table-card">
+                    <div class="metrics-table-header">
+                        <h2>Latitude</h2>
+                        <div id="metrics-table-lat-status" class="table-status">Loading...</div>
                     </div>
-                    <div class="graph-container">
-                        <div class="graph-wrapper active" id="graph-wrapper-1">
-                            <canvas id="metrics-graph-1" class="graph-canvas"></canvas>
-                        </div>
-                        <div class="graph-wrapper" id="graph-wrapper-2">
-                            <canvas id="metrics-graph-2" class="graph-canvas"></canvas>
-                        </div>
+                    <div class="metrics-table-wrapper">
+                        <table class="metrics-table" id="metrics-table-lat">
+                            <thead>
+                                <tr>
+                                    <th>Date &amp; Time</th>
+                                    <th>Actual Lat (°)</th>
+                                    <th>Pred 30m Lat (°)</th>
+                                    <th>Pred 60m Lat (°)</th>
+                                    <th>Pred 90m Lat (°)</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
                     </div>
                 </div>
-                <div class="card map-container">
-                    <h2>Metrics Visualization Map</h2>
-                    <div id="metrics-map"></div>
-                    <div id="metrics-path-legend" class="path-legend">
-                        <h3>Path Legend</h3>
-                        <div class="legend-items">
-                            <div class="legend-item clickable" data-path-type="true-historical" id="metrics-legend-true-historical">
-                                <span class="legend-color" style="background-color: #FF6B6B;"></span>
-                                <span class="legend-label">True Historical Path</span>
-                            </div>
-                            <div class="legend-item clickable" data-path-type="predicted-90min" id="metrics-legend-predicted-90min">
-                                <span class="legend-color" style="background-color: #FFA500;"></span>
-                                <span class="legend-label">Predicted (90 min ago)</span>
-                            </div>
-                            <div class="legend-item clickable" data-path-type="predicted-60min" id="metrics-legend-predicted-60min">
-                                <span class="legend-color" style="background-color: #FFD700;"></span>
-                                <span class="legend-label">Predicted (60 min ago)</span>
-                            </div>
-                            <div class="legend-item clickable" data-path-type="predicted-30min" id="metrics-legend-predicted-30min">
-                                <span class="legend-color" style="background-color: #FFFF00;"></span>
-                                <span class="legend-label">Predicted (30 min ago)</span>
-                            </div>
-                        </div>
+                <div class="card metrics-table-card">
+                    <div class="metrics-table-header">
+                        <h2>Longitude</h2>
+                        <div id="metrics-table-lon-status" class="table-status">Loading...</div>
+                    </div>
+                    <div class="metrics-table-wrapper">
+                        <table class="metrics-table" id="metrics-table-lon">
+                            <thead>
+                                <tr>
+                                    <th>Date &amp; Time</th>
+                                    <th>Actual Lon (°)</th>
+                                    <th>Pred 30m Lon (°)</th>
+                                    <th>Pred 60m Lon (°)</th>
+                                    <th>Pred 90m Lon (°)</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
                     </div>
                 </div>
             </div>
@@ -212,25 +194,11 @@
     <script type="module" src="./js/config.js"></script>
     <!-- issPrediction.js removed - predictions now come from API -->
     <script type="module" src="./js/main.js"></script>
-    <script type="module" src="./js/metrics.js"></script>
+    <script type="module" src="./js/metricsTableConfig.js"></script>
+    <script type="module" src="./js/metricsTable.js"></script>
+    <script type="module" src="./js/metricsTableInit.js"></script>
     <script type="module" src="./js/chat.js"></script>
     <script type="module" src="./js/message.js"></script>
-    <script type="module">
-        import { initMetricsPage, handleMetricsViewShown } from './js/metrics.js';
-        
-        let metricsInitialized = false;
-        
-        document.addEventListener('DOMContentLoaded', () => {
-            // Initialize metrics page when metrics view is shown
-            window.addEventListener('metricsViewShown', () => {
-                if (!metricsInitialized) {
-                    initMetricsPage();
-                    metricsInitialized = true;
-                }
-                handleMetricsViewShown();
-            });
-        });
-    </script>
     <script>
         // Tab navigation without page reload
         document.addEventListener('DOMContentLoaded', () => {
@@ -240,8 +208,8 @@
             // Check for hash in URL (for direct navigation)
             const hash = window.location.hash;
             let initialView = 'map';
-            if (hash === '#metrics') {
-                initialView = 'metrics';
+            if (hash === '#metrics-tables') {
+                initialView = 'metrics-tables';
             }
             
             // Initialize view based on URL hash or default to map
@@ -270,11 +238,9 @@
                             }, 100);
                         }
                         
-                        // If switching to metrics view, initialize metrics page
-                        if (viewName === 'metrics') {
+                        if (viewName === 'metrics-tables') {
                             setTimeout(() => {
-                                // Trigger a custom event that metrics.js can listen to
-                                window.dispatchEvent(new CustomEvent('metricsViewShown'));
+                                window.dispatchEvent(new CustomEvent('metricsTablesViewShown'));
                             }, 100);
                         }
                     } else {
@@ -306,8 +272,8 @@
             // Handle browser back/forward buttons
             window.addEventListener('popstate', () => {
                 const hash = window.location.hash;
-                if (hash === '#metrics') {
-                    switchView('metrics');
+                if (hash === '#metrics-tables') {
+                    switchView('metrics-tables');
                 } else {
                     switchView('map');
                 }

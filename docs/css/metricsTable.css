@@ -1,0 +1,43 @@
+.metrics-table-card {
+    margin-top: 1rem;
+}
+
+.metrics-table-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+}
+
+.metrics-table-wrapper {
+    overflow-x: auto;
+}
+
+.metrics-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 0.5rem;
+}
+
+.metrics-table th,
+.metrics-table td {
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    text-align: left;
+    color: #fff;
+    white-space: nowrap;
+}
+
+.metrics-table th {
+    font-weight: 600;
+    background-color: rgba(255, 255, 255, 0.04);
+}
+
+.table-status {
+    font-size: 0.9rem;
+    color: #a8b3c5;
+}
+
+.status-error {
+    color: #ff6b6b;
+}

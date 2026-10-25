@@ -71,6 +71,14 @@ def error(dt):
             'is_error_entry': True, 'latitude': None, 'longitude': None}
 
 
+# Sanity bounds for the +5 minute prediction. Sweeping two full orbits
+# (Oct 2026) gave medians of 0.35 deg lat / 0.18 deg lon, but up to
+# 4.9 / 2.7 deg near the latitude extremes, where the circular-orbit model is
+# weakest. A broken model (wrong direction or time) is off by tens of degrees.
+MAX_LAT_ERROR = 6.0
+MAX_LON_ERROR = 4.0
+
+
 def angle_diff(a, b):
     return abs((a - b + 180) % 360 - 180)
 
@@ -99,7 +107,7 @@ def test_normal_case_is_close_to_sgp4():
     predictions = generate(lambda s: [valid(s - timedelta(minutes=5))])
     assert len(predictions) == 19
     lat_err, lon_err = first_prediction_error(predictions)
-    assert lat_err < 2.5 and lon_err < 1.0
+    assert lat_err < MAX_LAT_ERROR and lon_err < MAX_LON_ERROR
 
 
 def test_skips_error_entry_before_source():
@@ -113,7 +121,7 @@ def test_outage_falls_back_to_sgp4_previous_position():
         error(s - timedelta(minutes=m)) for m in (5, 10, 15, 20, 25)])
     assert len(predictions) == 19
     lat_err, lon_err = first_prediction_error(predictions)
-    assert lat_err < 2.5 and lon_err < 1.0
+    assert lat_err < MAX_LAT_ERROR and lon_err < MAX_LON_ERROR
 
 
 def test_fetches_tle_once_per_call():

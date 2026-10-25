@@ -35,3 +35,6 @@ service-account*.json
 
 # Website files
 website_message.txt
+
+# Claude Code personal settings
+.claude/settings.local.json

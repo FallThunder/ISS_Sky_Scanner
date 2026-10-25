@@ -41,16 +41,12 @@ if ! gcloud auth list --filter=status:ACTIVE --format="get(account)" &> /dev/nul
     exit 1
 fi
 
-# Set the project
-echo "🔧 Setting project to $PROJECT_ID..."
-gcloud config set project $PROJECT_ID
-
-# Enable required APIs
-echo "📡 Enabling required APIs..."
-for api in "${REQUIRED_APIS[@]}"; do
-    echo "Enabling $api..."
-    gcloud services enable $api
-done
+# Project-wide setup (APIs, service account, IAM roles, Firestore indexes).
+# deploy_all_functions.sh runs it once up front and sets
+# SKIP_PROJECT_SETUP=true so parallel deploys don't race on the IAM policy.
+if [ "$SKIP_PROJECT_SETUP" != "true" ]; then
+    ../config/setup_project.sh
+fi
 
 # Deploy the function
 echo "📦 Deploying function..."

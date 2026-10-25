@@ -263,7 +263,7 @@ def format_database_response(locations):
     timestamp = location.get('timestamp')
     latitude = location.get('latitude')
     longitude = location.get('longitude')
-    country = location.get('country_code', 'Unknown')
+    place = location.get('location') or location.get('country_code') or ''
     
     # Format the timestamp
     from datetime import datetime
@@ -276,8 +276,10 @@ def format_database_response(locations):
     
     # Build the message
     message = f"The ISS was at {lat_str}, {lon_str}"
-    if country != 'Unknown':
-        message += f" over {country}"
+    if place.startswith('Over '):
+        message += f" over {place[5:]}"  # e.g. "Over the Indian Ocean"
+    elif place:
+        message += f" over {place}"
     message += f" at {formatted_time}."
     
     return message

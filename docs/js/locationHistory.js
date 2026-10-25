@@ -1,6 +1,28 @@
 // Constants
 const MAX_ENTRIES = 288; // 24 hours worth of entries (1 entry every 5 minutes)
-const PREDICTION_ENTRIES = 288; // 24 hours of predictions (1 entry every 5 minutes)
+const HISTORY_RANGE_URL = 'https://us-east1-iss-sky-scanner-20241222.cloudfunctions.net/iss_api_query_time_range';
+
+function hasValidCoords(loc) {
+    return !!loc && !loc.isEmpty &&
+        loc.latitude !== null && loc.latitude !== undefined &&
+        loc.longitude !== null && loc.longitude !== undefined &&
+        Number.isFinite(Number(loc.latitude)) && Number.isFinite(Number(loc.longitude));
+}
+
+// Collapse entries that share a timestamp, keeping the one with valid coordinates
+function dedupeByTimestamp(locations) {
+    const byTime = new Map();
+    (locations || []).forEach(loc => {
+        if (!loc || !loc.timestamp) return;
+        const key = new Date(loc.timestamp).getTime();
+        if (Number.isNaN(key)) return;
+        const existing = byTime.get(key);
+        if (!existing || (!hasValidCoords(existing) && hasValidCoords(loc))) {
+            byTime.set(key, loc);
+        }
+    });
+    return [...byTime.values()];
+}
 
 // Class to manage ISS location history
 class LocationHistoryManager {
@@ -13,7 +35,13 @@ class LocationHistoryManager {
     // Fetch 24 hours of history from API
     async fetchHistory() {
         try {
-            const response = await fetch('https://us-east1-iss-sky-scanner-20241222.cloudfunctions.net/iss_api_query_time_range?minutes=1440');
+            const response = await fetch(`${HISTORY_RANGE_URL}?minutes=1440`);
+            if (response.status === 404) {
+                // API returns 404 when there are no rows at all in the window
+                console.warn('History API returned 404 (no data in the last 24 hours)');
+                this.locations = [];
+                return false;
+            }
             if (!response.ok) {
                 throw new Error(`HTTP error! status: ${response.status}`);
             }
@@ -23,12 +51,17 @@ class LocationHistoryManager {
                 throw new Error('Invalid data format from API');
             }
             
-            // Sort locations by timestamp to ensure correct order (newest first)
-            this.locations = this.sortLocations(data.locations);
+            // Dedupe by timestamp (preferring real entries over isEmpty/error placeholders)
+            // and sort newest first
+            this.locations = this.sortLocations(dedupeByTimestamp(data.locations));
             
-            // Trim to exactly 24 hours if we have more data
-            if (this.locations.length > MAX_ENTRIES) {
-                this.locations = this.locations.slice(0, MAX_ENTRIES);
+            // Trim to the 24 hour window ending at the newest entry (by time, not by count)
+            if (this.locations.length > 0) {
+                const cutoff = new Date(this.locations[0].timestamp).getTime() - (24 * 60 * 60 * 1000);
+                this.locations = this.locations.filter(loc => new Date(loc.timestamp).getTime() >= cutoff);
+            }
+            if (this.locations.length > MAX_ENTRIES + 1) {
+                this.locations = this.locations.slice(0, MAX_ENTRIES + 1);
             }
             
             console.log('Fetched', this.locations.length, 'locations');
@@ -140,7 +173,7 @@ class LocationHistoryManager {
                 // Round source timestamp to 5-minute interval to group predictions correctly
                 const sourceTs = this.roundTimestampTo5Minutes(rawSourceTs);
 
-                if (!isWithinPredictionWindow(pred, sourceTs)) {
+                if (!hasValidCoords(pred) || !isWithinPredictionWindow(pred, sourceTs)) {
                     return;
                 }
                 
@@ -172,7 +205,7 @@ class LocationHistoryManager {
                 // Round source timestamp to 5-minute interval to group predictions correctly
                 const sourceTs = this.roundTimestampTo5Minutes(rawSourceTs);
 
-                if (!isWithinPredictionWindow(pred, sourceTs)) {
+                if (!hasValidCoords(pred) || !isWithinPredictionWindow(pred, sourceTs)) {
                     return;
                 }
                 
@@ -265,7 +298,10 @@ class LocationHistoryManager {
             roundedTime.setUTCSeconds(0);
             roundedTime.setUTCMilliseconds(0);
             const key = roundedTime.getTime();
-            locationMap.set(key, loc);
+            const existing = locationMap.get(key);
+            if (!existing || (!hasValidCoords(existing) && hasValidCoords(loc))) {
+                locationMap.set(key, loc);
+            }
         });
         
         // Generate filled array with placeholders for missing slots
@@ -296,20 +332,32 @@ class LocationHistoryManager {
         return filledHistory;
     }
 
-    // Return predictions exactly as provided by the API (no client-side generation)
+    // Return predictions exactly as provided by the API (no client-side generation),
+    // limited to timestamps after the newest history slot so the slider stays chronological
+    // (stale predictions from an old source would otherwise be appended after "Now")
     fillGapsInPredictions() {
         if (!this.predictions || this.predictions.length === 0) {
             return [];
         }
 
-        const sortedPredictions = [...this.predictions].sort((a, b) => {
-            return new Date(a.timestamp) - new Date(b.timestamp);
-        });
+        const filledHistory = this.fillGapsInHistory();
+        const lastHistoryTime = filledHistory.length > 0
+            ? new Date(filledHistory[filledHistory.length - 1].timestamp).getTime()
+            : -Infinity;
 
-        return sortedPredictions.map(pred => ({
-            ...pred,
-            isPredicted: pred.isPredicted ?? true
-        }));
+        const seen = new Set();
+        return [...this.predictions]
+            .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))
+            .filter(pred => {
+                const t = new Date(pred.timestamp).getTime();
+                if (Number.isNaN(t) || t <= lastHistoryTime || seen.has(t)) return false;
+                seen.add(t);
+                return true;
+            })
+            .map(pred => ({
+                ...pred,
+                isPredicted: pred.isPredicted ?? true
+            }));
     }
 
     // Get combined history and predictions for the full 48-hour range

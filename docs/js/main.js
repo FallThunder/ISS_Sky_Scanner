@@ -13,16 +13,16 @@ function showPredictionsLoading() {
     }
 }
 
-function hidePredictionsLoading() {
+function hidePredictionsLoading(predictionsLoaded = true) {
     const loadingElement = document.getElementById('predictions-loading');
     const spinner = document.getElementById('loading-spinner');
     const checkmark = document.getElementById('loading-checkmark');
     const loadingText = document.getElementById('loading-text');
-    
+
     if (loadingElement && spinner && checkmark && loadingText) {
         spinner.style.display = 'none';
-        checkmark.style.display = 'flex';
-        loadingText.textContent = 'Predictions ready!';
+        checkmark.style.display = predictionsLoaded ? 'flex' : 'none';
+        loadingText.textContent = predictionsLoaded ? 'Predictions ready!' : 'Predictions are currently unavailable';
         
         setTimeout(() => {
             loadingElement.classList.add('fade-out');
@@ -51,6 +51,7 @@ const MAX_RETRY_ATTEMPTS = 5;
 const RETRY_STOP_THRESHOLD = 60 * 1000;
 let autoRefreshTimer = null;
 let retryTimer = null;
+let predictionsRefreshTimer = null;
 let lastDataTimestamp = null;
 let retryCount = 0;
 let isFetching = false;
@@ -68,40 +69,24 @@ async function init() {
     console.log('init: Starting initialization...');
     initMap();
     initializeLegendToggle();
-    
-    console.log('init: Initializing location history...');
-    await locationHistory.initializeHistory();
-    console.log('init: Location history initialized, count:', locationHistory.getLocations().length);
-    
-    showPredictionsLoading();
-    
-    console.log('init: Creating history slider...');
-    historySlider = new HistorySlider(locationHistory, updateMapFromHistory);
-    historySlider.initialize();
-    console.log('init: History slider initialized');
-    
-    console.log('init: Waiting 100ms before fetching data...');
-    await new Promise(resolve => setTimeout(resolve, 100));
-    
-    // Listen for map view being shown (for tab navigation)
+
+    // Listen for map view being shown (for tab navigation). Registered right after the map
+    // is created so a quick tab switch during the initial history fetch isn't missed
+    // (the map may have been created while its tab was hidden, i.e. with a 0x0 size).
     window.addEventListener('mapViewShown', () => {
         if (map) {
             // Close any open popups before resizing to prevent text wrapping issues
             map.closePopup();
-            
+
             // Invalidate map size to fix rendering after being hidden
             setTimeout(() => {
                 map.invalidateSize();
-                
+
                 // Reopen popup after resize if there's a marker
-                if (issMarker && issMarker.length > 0) {
+                if (Array.isArray(issMarker) && issMarker.length > 0) {
                     setTimeout(() => {
-                        const center = map.getCenter();
-                        const closestMarker = issMarker.reduce((prev, curr) => {
-                            const prevDist = Math.abs(prev.getLatLng().lng - center.lng);
-                            const currDist = Math.abs(curr.getLatLng().lng - center.lng);
-                            return currDist < prevDist ? curr : prev;
-                        });
+                        if (!Array.isArray(issMarker) || issMarker.length === 0) return;
+                        const closestMarker = getClosestMarker(issMarker, map.getCenter().lng);
                         if (closestMarker && closestMarker.getPopup()) {
                             closestMarker.openPopup();
                         }
@@ -110,15 +95,34 @@ async function init() {
             }, 50);
         }
     });
-    
+
+    showPredictionsLoading();
+
+    console.log('init: Initializing location history...');
+    await locationHistory.initializeHistory();
+    console.log('init: Location history initialized, count:', locationHistory.getLocations().length);
+
+    console.log('init: Creating history slider...');
+    historySlider = new HistorySlider(locationHistory, updateMapFromHistory);
+    historySlider.initialize();
+    console.log('init: History slider initialized');
+
     console.log('init: Fetching ISS data and predictions in parallel...');
-    
+
     // Fetch both APIs in parallel for faster loading
-    await Promise.allSettled([
+    const [, predictionsResult] = await Promise.allSettled([
         fetchISSData(),
         fetchPredictionsData()
     ]);
-    
+
+    // Hide the loading animation once both requests have settled
+    const predictionsLoaded = predictionsResult.status === 'fulfilled' && predictionsResult.value === true;
+    requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+            hidePredictionsLoading(predictionsLoaded);
+        });
+    });
+
     console.log('init: Initialization complete');
     
     startAutoRefresh();
@@ -162,9 +166,11 @@ function initMap() {
         zoom: 2
     });
 
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-        attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, © <a href="https://carto.com/attributions">CARTO</a>',
-        maxZoom: 19,
+    // CARTO basemaps (dark_all) now return an "API KEY REQUIRED" placeholder tile for
+    // keyless requests, so use Esri's keyless dark gray canvas instead.
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
+        attribution: 'Tiles &copy; <a href="https://www.esri.com/">Esri</a> &mdash; Esri, HERE, Garmin, &copy; OpenStreetMap contributors',
+        maxZoom: 16,
         className: 'dark-map',
         backgroundColor: '#1a1a1a'  // Match our dark theme background
     }).addTo(map);
@@ -178,15 +184,12 @@ function initMap() {
         
         // Update popup to show on marker closest to viewport center
         if (issMarker && Array.isArray(issMarker) && issMarker.length > 0) {
-            const center = map.getCenter();
-            const closestMarker = issMarker.reduce((prev, curr) => {
-                const prevDist = Math.abs(prev.getLatLng().lng - center.lng);
-                const currDist = Math.abs(curr.getLatLng().lng - center.lng);
-                return currDist < prevDist ? curr : prev;
-            });
-            
-            // Only open popup if one of the markers has a popup bound
-            if (closestMarker && closestMarker.getPopup()) {
+            const closestMarker = getClosestMarker(issMarker, map.getCenter().lng);
+
+            // Only (re)open the popup if it moved to a different world copy. Re-opening an
+            // already-open popup re-runs Leaflet's autopan, which fires another moveend and
+            // loops forever (stack overflow when the popup can't fully fit in the viewport).
+            if (closestMarker && closestMarker.getPopup() && !closestMarker.isPopupOpen()) {
                 // Close all other popups first
                 issMarker.forEach(marker => {
                     if (marker !== closestMarker && marker.getPopup()) {
@@ -238,16 +241,13 @@ function initMap() {
             if (issMarker) {
                 if (Array.isArray(issMarker) && issMarker.length > 0) {
                     // Find the marker closest to the current viewport center
-                    const center = map.getCenter();
-                    const closestMarker = issMarker.reduce((prev, curr) => {
-                        const prevDist = Math.abs(prev.getLatLng().lng - center.lng);
-                        const currDist = Math.abs(curr.getLatLng().lng - center.lng);
-                        return currDist < prevDist ? curr : prev;
-                    });
+                    const closestMarker = getClosestMarker(issMarker, map.getCenter().lng);
                     map.panTo(closestMarker.getLatLng());
                 } else if (!Array.isArray(issMarker)) {
                     map.panTo(issMarker.getLatLng());
                 }
+            } else if (currentPredictionMarker) {
+                map.panTo(currentPredictionMarker.getLatLng());
             }
         });
         
@@ -256,13 +256,35 @@ function initMap() {
     centerButton.addTo(map);
 }
 
-function redrawPathsForWorldCopies() {
-    // Redraw prediction paths when map view changes
-    if (predictionsVisible) {
-        updatePredictionDisplay();
-    }
-            }
+// Return the marker (out of its world copies) whose longitude is closest to targetLng
+function getClosestMarker(markers, targetLng) {
+    return markers.reduce((prev, curr) => {
+        const prevDist = Math.abs(prev.getLatLng().lng - targetLng);
+        const currDist = Math.abs(curr.getLatLng().lng - targetLng);
+        return currDist < prevDist ? curr : prev;
+    });
+}
 
+// True when both coordinates are present and numeric (0 is a valid coordinate)
+function hasValidCoordinates(lat, lon) {
+    return lat !== null && lat !== undefined && lat !== '' &&
+        lon !== null && lon !== undefined && lon !== '' &&
+        Number.isFinite(Number(lat)) && Number.isFinite(Number(lon));
+}
+
+// Remove all ISS marker copies from the map
+function clearIssMarkers() {
+    if (issMarker) {
+        const markers = Array.isArray(issMarker) ? issMarker : [issMarker];
+        markers.forEach(marker => {
+            map.removeLayer(marker);
+            if (marker.uncertaintyCircles) {
+                marker.uncertaintyCircles.forEach(circle => map.removeLayer(circle));
+            }
+        });
+    }
+    issMarker = null;
+}
 
 function formatCoordinates(lat, lon) {
     const latDir = lat >= 0 ? 'N' : 'S';
@@ -272,7 +294,10 @@ function formatCoordinates(lat, lon) {
 
 function formatTimestamp(timestamp) {
     const date = new Date(timestamp);
-    
+    if (!timestamp || Number.isNaN(date.getTime())) {
+        return 'Unknown';
+    }
+
     const localTimeStr = date.toLocaleString('en-US', {
         year: 'numeric',
         month: 'numeric',
@@ -383,17 +408,23 @@ async function fetchISSDataWithRetry() {
     
     isFetching = true;
     
+    // Capture what the user is looking at *before* history is refetched, since the
+    // refetch shifts the 24h window (slider indices then point at different times)
+    const slider = document.getElementById('history-slider');
+    const previousFilledCount = locationHistory.getFilledHistoryCount();
+    const isViewingNow = !slider || previousFilledCount === 0 ||
+        parseInt(slider.value) === previousFilledCount - 1;
+    const selectedTimestamp = historySlider ? historySlider.getCurrentSliderInfo().timestamp : null;
+    
     try {
-        // Fetch both current location and 24-hour history in parallel
-        const [currentResponse, historyFetched] = await Promise.all([
-            fetch(`${config.API_URL}?api_key=${config.API_KEY}`),
-            locationHistory.fetchHistory()
-        ]);
+        // Fetch the current location first; the 24-hour history is only refetched once
+        // there is new data (retries for unchanged data would otherwise refetch it each time)
+        const currentResponse = await fetch(`${config.API_URL}?api_key=${config.API_KEY}`);
         
         if (!currentResponse.ok) {
             const errorText = await currentResponse.text();
             console.error('API Error in retry:', errorText);
-            throw new Error(`API returned ${currentResponse.status}: ${errorText}`);
+            throw new Error(`API returned ${currentResponse.status}`);
         }
         
         const contentType = currentResponse.headers.get('content-type');
@@ -430,7 +461,9 @@ async function fetchISSDataWithRetry() {
             console.log(`No new data available, retrying in 7 seconds... (attempt ${retryCount}/${MAX_RETRY_ATTEMPTS})`);
             
             isFetching = false; // Allow next retry attempt
+            if (retryTimer) clearTimeout(retryTimer);
             retryTimer = setTimeout(() => {
+                retryTimer = null;
                 fetchISSDataWithRetry();
             }, RETRY_INTERVAL);
             
@@ -446,28 +479,13 @@ async function fetchISSDataWithRetry() {
         lastDataTimestamp = data.timestamp;
         lastRefreshTime = Date.now();
         
-        // Update actual locations map for accuracy comparison
-        updateActualLocations(data);
+        await locationHistory.fetchHistory();
         
-        // Check if user is viewing "now" (most recent position) before updating
-        const filledHistoryCount = locationHistory.getFilledHistoryCount();
-        const slider = document.getElementById('history-slider');
-        const isViewingNow = !slider || parseInt(slider.value) === filledHistoryCount - 1;
+        // Update the info cards; only touch the map (marker + pan) when the user is
+        // viewing "now" - otherwise the historical/predicted marker they selected stays
+        updateUI(data, { updateMap: isViewingNow, skipMapPan: !isViewingNow });
         
-        // Update UI (but don't pan map if this is not initial load)
-        const addResult = updateUI(data, !isInitialLoad);
-        
-        // Update slider range
-        historySlider.updateSliderRange();
-        
-        // Only move to newest entry if user is currently viewing "now" or if it's initial load
-        if (isViewingNow || isInitialLoad) {
-            const newFilledHistoryCount = locationHistory.getFilledHistoryCount();
-            historySlider.setSliderValue(newFilledHistoryCount - 1, true);
-            console.log('New data loaded - moved slider to newest entry at position:', newFilledHistoryCount - 1);
-        } else {
-            console.log('User is viewing history, keeping slider position');
-        }
+        restoreSliderPosition(isViewingNow, selectedTimestamp);
         
         // Hide any previous error messages
         document.getElementById('error').style.display = 'none';
@@ -476,7 +494,9 @@ async function fetchISSDataWithRetry() {
         isFetching = false;
         
         // Wait 5 seconds for predictions to be generated before fetching
-        setTimeout(() => {
+        if (predictionsRefreshTimer) clearTimeout(predictionsRefreshTimer);
+        predictionsRefreshTimer = setTimeout(() => {
+            predictionsRefreshTimer = null;
             fetchPredictionsData().catch(err => {
                 console.error('Background predictions fetch failed:', err);
             });
@@ -491,6 +511,9 @@ async function fetchISSDataWithRetry() {
         // Reset fetching flag on error
         isFetching = false;
         
+        // History may have been refetched before the failure; keep the slider consistent
+        restoreSliderPosition(isViewingNow, selectedTimestamp);
+        
         // Show error but still schedule next attempt
         showError(
             'Failed to fetch ISS data. Will retry automatically.',
@@ -499,6 +522,25 @@ async function fetchISSDataWithRetry() {
         
         // Schedule next auto-refresh even on error
         startAutoRefresh();
+    }
+}
+
+// After history/predictions change, put the slider back where the user was:
+// on "now" if they were viewing now, otherwise on the same timestamp (if still in range)
+function restoreSliderPosition(wasViewingNow, selectedTimestamp) {
+    if (!historySlider) return;
+    historySlider.updateSliderRange();
+    const nowIndex = locationHistory.getFilledHistoryCount() - 1;
+    
+    if (wasViewingNow || !selectedTimestamp) {
+        historySlider.setSliderValue(nowIndex, true);
+        console.log('Moved slider to newest entry at position:', nowIndex);
+        return;
+    }
+    
+    if (!historySlider.setSliderToTimestamp(selectedTimestamp, true)) {
+        // Selected time scrolled out of the window (or prediction was replaced) - go to now
+        historySlider.setSliderValue(nowIndex);
     }
 }
 
@@ -588,68 +630,25 @@ function updateMapFromHistory(location) {
     // Hide "no data available" message if it's showing (we'll show it later if needed)
     hideNoDataMessage();
     
-    const hasValidCoordinates = 
-        location.latitude !== null && location.latitude !== undefined &&
-        location.longitude !== null && location.longitude !== undefined;
-    
-    if (location.isEmpty || !hasValidCoordinates) {
+    if (location.isEmpty || !hasValidCoordinates(location.latitude, location.longitude)) {
         console.log('updateMapFromHistory - Placeholder or missing coordinates, removing markers');
-        if (issMarker) {
-            if (Array.isArray(issMarker)) {
-                issMarker.forEach(marker => {
-                    map.removeLayer(marker);
-                    if (marker.uncertaintyCircles) {
-                        marker.uncertaintyCircles.forEach(circle => map.removeLayer(circle));
-                    }
-                });
-            } else {
-                map.removeLayer(issMarker);
-                if (issMarker.uncertaintyCircles) {
-                    issMarker.uncertaintyCircles.forEach(circle => map.removeLayer(circle));
-                }
-            }
+        clearIssMarkers();
+        if (currentPredictionMarker) {
+            map.removeLayer(currentPredictionMarker);
+            currentPredictionMarker = null;
         }
-        issMarker = null;
-        
-        if (isCurrentLocationLoaded) {
-            showNoDataMessage(location.timestamp);
-        }
+        showNoDataMessage(location.timestamp);
+        updatePredictionDisplay();
         return;
     }
     
     const lat = parseFloat(location.latitude);
     const lon = parseFloat(location.longitude);
     
-    // Validate coordinates are valid numbers
-    if (isNaN(lat) || isNaN(lon)) {
-        console.warn('updateMapFromHistory - Invalid coordinates after parsing:', { lat, lon, location });
-        // If it's a prediction group but we couldn't calculate coordinates, show no data message
-        if (location.isPredictionGroup) {
-            showNoDataMessage(location.timestamp);
-        }
-        return;
-    }
-    
     console.log('updateMapFromHistory - Displaying marker at:', { lat, lon });
     
     // Remove existing markers if they exist
-    if (issMarker) {
-        if (Array.isArray(issMarker)) {
-            issMarker.forEach(marker => {
-                map.removeLayer(marker);
-                // Remove uncertainty circles if they exist
-                if (marker.uncertaintyCircles) {
-                    marker.uncertaintyCircles.forEach(circle => map.removeLayer(circle));
-                }
-            });
-        } else {
-            map.removeLayer(issMarker);
-            // Remove uncertainty circles if they exist
-            if (issMarker.uncertaintyCircles) {
-                issMarker.uncertaintyCircles.forEach(circle => map.removeLayer(circle));
-            }
-        }
-    }
+    clearIssMarkers();
     
     // Check if this is a prediction (future location)
     const isPrediction = location.isPredicted || location.isPredictionGroup;
@@ -662,22 +661,7 @@ function updateMapFromHistory(location) {
         console.log('updateMapFromHistory - Handling prediction selection');
         
         // Remove any existing ISS markers
-        if (issMarker) {
-            if (Array.isArray(issMarker)) {
-                issMarker.forEach(marker => {
-                    map.removeLayer(marker);
-                    if (marker.uncertaintyCircles) {
-                        marker.uncertaintyCircles.forEach(circle => map.removeLayer(circle));
-                    }
-                });
-            } else {
-                map.removeLayer(issMarker);
-                if (issMarker.uncertaintyCircles) {
-                    issMarker.uncertaintyCircles.forEach(circle => map.removeLayer(circle));
-                }
-            }
-        }
-        issMarker = null;
+        clearIssMarkers();
         
         // Remove any existing prediction marker
         if (currentPredictionMarker) {
@@ -687,9 +671,17 @@ function updateMapFromHistory(location) {
         
         // Calculate minutes ahead
         const minutesAhead = Math.round((locationTime - now) / (1000 * 60));
+        const aheadText = minutesAhead >= 0 ? `${minutesAhead} minutes ahead` : `${Math.abs(minutesAhead)} minutes ago`;
         
         // Create popup content
-        const popupContent = `<b>Predicted Location:</b><br>${formatCoordinates(lat, lon)}<br><small>${minutesAhead} minutes ahead</small>`;
+        const popupContent = `<b>Predicted Location:</b><br>${formatCoordinates(lat, lon)}<br><small>${aheadText}</small>`;
+        
+        // Place the marker on the world copy closest to the current view so panning
+        // doesn't jump across the map when the view is on a wrapped copy
+        const viewCenterLng = map.getCenter().lng;
+        let predLng = lon;
+        while (predLng < viewCenterLng - 180) predLng += 360;
+        while (predLng > viewCenterLng + 180) predLng -= 360;
         
         // Create simple prediction dot icon
         const predictionDotIcon = L.divIcon({
@@ -701,11 +693,11 @@ function updateMapFromHistory(location) {
         });
         
         // Create marker at prediction location
-        currentPredictionMarker = L.marker([lat, lon], { icon: predictionDotIcon }).addTo(map);
+        currentPredictionMarker = L.marker([lat, predLng], { icon: predictionDotIcon }).addTo(map);
         currentPredictionMarker.bindPopup(popupContent);
         
         // Pan to the prediction location
-        map.panTo([lat, lon]);
+        map.panTo([lat, predLng]);
         
         // Open popup
         currentPredictionMarker.openPopup();
@@ -756,9 +748,9 @@ function updateMapFromHistory(location) {
         popupContent += formatCoordinates(lat, lon);
     } else {
         // Historical or current location
-    let popupPrefix = 'Historical Location';
+        let popupPrefix = 'Historical Location';
         if (isCurrentLocation) {
-        popupPrefix = 'ISS Location';
+            popupPrefix = 'ISS Location';
         }
         
         popupContent = `<b>${popupPrefix}:</b><br>`;
@@ -766,9 +758,11 @@ function updateMapFromHistory(location) {
             const flag = getCountryFlag(location.location, location.country_code);
             const flagText = flag ? ` ${flag}` : '';
             popupContent += `${location.location}${flagText}`;
+        } else {
+            popupContent += formatCoordinates(lat, lon);
         }
-        }
-        
+    }
+    
     // Add markers for all visible longitudes with extra buffer
     for (let currLon = baseLon; currLon <= east + 720; currLon += 360) {  // Add two world widths to the east
         const marker = L.marker([lat, currLon], { icon: markerIcon }).addTo(map);
@@ -786,12 +780,7 @@ function updateMapFromHistory(location) {
     // Open popup on the marker closest to the target position (not current center)
     // Open popup for any location (historical, current, or prediction)
     if (issMarker.length > 0) {
-        const closestMarker = issMarker.reduce((prev, curr) => {
-            const prevDist = Math.abs(prev.getLatLng().lng - targetLng);
-            const currDist = Math.abs(curr.getLatLng().lng - targetLng);
-            return currDist < prevDist ? curr : prev;
-        });
-        closestMarker.openPopup();
+        getClosestMarker(issMarker, targetLng).openPopup();
     }
     
     // Update prediction display based on current slider position
@@ -888,16 +877,16 @@ function updatePredictionDisplay() {
     
     // Start the predicted path from the current ISS location so the first
     // prediction point connects cleanly on the map.
+    // Only connect when the known position is recent relative to the first prediction;
+    // otherwise (e.g. stale "latest valid" position) the connector would be a bogus line.
     let pathCoords = predictionCoords;
-    if (isCurrentLocationLoaded) {
-        const latestLocation = locationHistory.getLocations()[0];
-        if (latestLocation && latestLocation.latitude !== null && latestLocation.longitude !== null) {
-            const currentLat = parseFloat(latestLocation.latitude);
-            const currentLon = parseFloat(latestLocation.longitude);
-            
-            if (!isNaN(currentLat) && !isNaN(currentLon)) {
-                pathCoords = [[currentLat, currentLon], ...predictionCoords];
-            }
+    const startLocation = (currentISSLocation && hasValidCoordinates(currentISSLocation.latitude, currentISSLocation.longitude))
+        ? currentISSLocation
+        : locationHistory.getLocations().find(loc => !loc.isEmpty && hasValidCoordinates(loc.latitude, loc.longitude));
+    if (startLocation) {
+        const gapMs = futurePredictions[0].time - new Date(startLocation.timestamp);
+        if (gapMs > 0 && gapMs <= 15 * 60 * 1000) {
+            pathCoords = [[parseFloat(startLocation.latitude), parseFloat(startLocation.longitude)], ...predictionCoords];
         }
     }
     
@@ -983,13 +972,10 @@ function updatePredictionDisplay() {
 }
 
 // Update the UI with ISS data
-function updateUI(data, skipMapPan = false) {
-    console.log('updateUI: Called with data:', data, 'skipMapPan:', skipMapPan);
-    
-    if (!data || !data.latitude || !data.longitude) {
-        console.error('updateUI: Invalid data - missing latitude/longitude', data);
-        return null;
-    }
+// options.updateMap: redraw the ISS marker (false when the user is viewing another time)
+// options.skipMapPan: don't pan/open the popup
+function updateUI(data, { updateMap = true, skipMapPan = false } = {}) {
+    console.log('updateUI: Called with data:', data, 'updateMap:', updateMap, 'skipMapPan:', skipMapPan);
     
     const coordinates = document.getElementById('coordinates');
     const time = document.getElementById('time');
@@ -1000,48 +986,48 @@ function updateUI(data, skipMapPan = false) {
         return null;
     }
     
-    try {
-        console.log('updateUI: Updating display with latest data');
-        console.log('updateUI: historySlider exists?', !!historySlider);
-
-        // Predictions are now loaded separately via fetchPredictionsData()
-        // No need to process predictions here
-
-        if (historySlider) {
-            historySlider.updateSliderRange();
-            
-            const allLocations = locationHistory.getAllLocations();
-            const historyCount = locationHistory.getLocations().length;
-            if (allLocations.length > historyCount) {
-                const firstPrediction = allLocations[historyCount];
-                console.log('Verification - First prediction accessible:', firstPrediction ? firstPrediction.timestamp : 'null');
+    // The API can return an error placeholder (status "success" but null coordinates).
+    // Show a friendly state instead of a marker at null/NaN.
+    if (!data || !hasValidCoordinates(data.latitude, data.longitude)) {
+        console.warn('updateUI: Current location unavailable (missing latitude/longitude)', data);
+        showLocationUnavailable(data);
+        if (updateMap && map) {
+            clearIssMarkers();
+            if (currentPredictionMarker) {
+                map.removeLayer(currentPredictionMarker);
+                currentPredictionMarker = null;
             }
-            
-            if (!historySlider.isPositioned()) {
-                const filledHistoryCount = locationHistory.getFilledHistoryCount();
-                historySlider.setSliderValue(filledHistoryCount - 1, true);
-            }
-        } else {
-            console.warn('updateUI: historySlider not initialized, skipping slider updates');
+            showNoDataMessage(data && data.timestamp);
         }
-        
-        
-        const currentLocation = {
+        return null;
+    }
+    
+    try {
+        currentISSLocation = {
             timestamp: data.timestamp,
             latitude: data.latitude,
             longitude: data.longitude
         };
-        currentISSLocation = currentLocation;
         
-        // Predictions display removed - not shown on map
-
-        // Update text displays
-        coordinates.textContent = `${formatCoordinates(parseFloat(data.latitude), parseFloat(data.longitude))}${data.location ? `\n\n${data.location}` : ''}`;
-        time.textContent = formatTimestamp(data.timestamp);
-        fact.textContent = data.fun_fact || 'No fun fact available for this location.';
-
         const lat = parseFloat(data.latitude);
         const lon = parseFloat(data.longitude);
+        
+        // Update text displays
+        coordinates.textContent = `${formatCoordinates(lat, lon)}${data.location ? `\n\n${data.location}` : ''}`;
+        time.textContent = formatTimestamp(data.timestamp);
+        fact.textContent = data.fun_fact || 'No fun fact available for this location.';
+        
+        if (!updateMap) {
+            console.log('updateUI: User is viewing another time, leaving map markers alone');
+            return null;
+        }
+        
+        hideNoDataMessage();
+        clearIssMarkers();
+        if (currentPredictionMarker) {
+            map.removeLayer(currentPredictionMarker);
+            currentPredictionMarker = null;
+        }
         
         const issIcon = L.icon({
             iconUrl: './assets/iss-icon.svg',
@@ -1050,43 +1036,29 @@ function updateUI(data, skipMapPan = false) {
             popupAnchor: [0, -16]
         });
         
-        if (issMarker) {
-            if (Array.isArray(issMarker)) {
-                issMarker.forEach(marker => {
-                    map.removeLayer(marker);
-                    if (marker.uncertaintyCircles) {
-                        marker.uncertaintyCircles.forEach(circle => map.removeLayer(circle));
-                    }
-                });
-            } else {
-                map.removeLayer(issMarker);
-                // Remove uncertainty circles if they exist
-                if (issMarker.uncertaintyCircles) {
-                    issMarker.uncertaintyCircles.forEach(circle => map.removeLayer(circle));
-                }
-            }
-        }
-
         const bounds = map.getBounds();
         const west = bounds.getWest();
         const east = bounds.getEast();
         const center = bounds.getCenter();
-
+        
         let baseLon = lon;
         while (baseLon > west - 360) baseLon -= 360;
-
+        
+        let popupContent = '<b>ISS Location:</b><br>';
+        if (data.location) {
+            const flag = getCountryFlag(data.location, data.country_code);
+            popupContent += `${data.location}${flag ? ` ${flag}` : ''}`;
+        } else {
+            popupContent += formatCoordinates(lat, lon);
+        }
+        
         issMarker = [];
-
         for (let currLon = baseLon; currLon <= east + 720; currLon += 360) {
             const marker = L.marker([lat, currLon], { icon: issIcon }).addTo(map);
-            if (data.location) {
-                const flag = getCountryFlag(data.location, data.country_code);
-                const flagText = flag ? ` ${flag}` : '';
-                marker.bindPopup(`<b>ISS Location:</b><br>${data.location}${flagText}`);
-            }
+            marker.bindPopup(popupContent);
             issMarker.push(marker);
         }
-
+        
         // Only pan map and open popup on initial load or when user is viewing "now"
         if (!skipMapPan) {
             // Find the closest marker to center for panning
@@ -1096,25 +1068,37 @@ function updateUI(data, skipMapPan = false) {
             
             map.panTo([lat, targetLng]);
             
-            if (data.location && issMarker.length > 0) {
-                const closestMarker = issMarker.reduce((prev, curr) => {
-                    const prevDist = Math.abs(prev.getLatLng().lng - targetLng);
-                    const currDist = Math.abs(curr.getLatLng().lng - targetLng);
-                    return currDist < prevDist ? curr : prev;
-                });
-                closestMarker.openPopup();
+            if (issMarker.length > 0) {
+                getClosestMarker(issMarker, targetLng).openPopup();
             }
-        } else {
-            console.log('updateUI: Skipping map pan - auto-refresh with user viewing history');
         }
         
+        updatePredictionDisplay();
         console.log('updateUI: Completed successfully');
         return null;
     } catch (error) {
         console.error('updateUI: Error processing data:', error);
-        console.error('updateUI: Error stack:', error);
         return null;
     }
+}
+
+// Friendly state for when the current location isn't available
+function showLocationUnavailable(data) {
+    const coordinates = document.getElementById('coordinates');
+    const time = document.getElementById('time');
+    const fact = document.getElementById('fact');
+    
+    currentISSLocation = null;
+    
+    // Point to the most recent valid position from history, if there is one
+    const lastKnown = locationHistory.getLocations().find(loc => !loc.isEmpty && hasValidCoordinates(loc.latitude, loc.longitude));
+    let text = 'Live position temporarily unavailable.';
+    if (lastKnown) {
+        text += `\n\nLast known: ${formatCoordinates(parseFloat(lastKnown.latitude), parseFloat(lastKnown.longitude))} at ${new Date(lastKnown.timestamp).toLocaleString()}`;
+    }
+    if (coordinates) coordinates.textContent = text;
+    if (time) time.textContent = data && data.timestamp ? formatTimestamp(data.timestamp) : 'Unknown';
+    if (fact) fact.textContent = (data && data.fun_fact) || 'No fun fact available right now.';
 }
 
 // Show error message
@@ -1137,10 +1121,11 @@ function showNoDataMessage(timestamp) {
     const noDataMessage = document.getElementById('no-data-message');
     if (noDataMessage) {
         const date = new Date(timestamp);
-        const timeStr = date.toLocaleString();
         const messageText = noDataMessage.querySelector('span');
         if (messageText) {
-            messageText.textContent = `Location data is not available for ${timeStr}`;
+            messageText.textContent = timestamp && !Number.isNaN(date.getTime())
+                ? `Location data is not available for ${date.toLocaleString()}`
+                : 'Location data is not available right now';
         }
         noDataMessage.style.display = 'flex';
     }
@@ -1169,12 +1154,10 @@ async function fetchPredictionsData() {
         console.log('fetchPredictionsData: Data parsed', data);
         console.log('fetchPredictionsData: predictions data:', data.predictions);
         console.log('fetchPredictionsData: orbital_mechanics:', data.predictions?.orbital_mechanics?.length || 0);
-        console.log('fetchPredictionsData: sgp4:', data.predictions?.sgp4?.length || 0);
         
         if (data.status === 'success' && data.predictions) {
             console.log('fetchPredictionsData: Setting predictions from API...');
-            console.log('fetchPredictionsData: Full predictions object:', JSON.stringify(data.predictions, null, 2));
-            locationHistory.setPredictionsFromAPI(data.predictions);
+                locationHistory.setPredictionsFromAPI(data.predictions);
 
             // Update prediction display on map
             // On initial load, wait a bit for map to finish positioning
@@ -1187,20 +1170,40 @@ async function fetchPredictionsData() {
             };
             
             console.log('fetchPredictionsData: Completed successfully');
+            refreshSliderAfterPredictionsChange();
+            // Only count predictions that are newer than the history (stale ones are dropped)
+            return locationHistory.fillGapsInPredictions().length > 0;
         } else {
             console.warn('fetchPredictionsData: No predictions data in response');
             locationHistory.setPredictionsFromAPI(null);
             // Clear prediction display if no predictions
             updatePredictionDisplay();
+            refreshSliderAfterPredictionsChange();
+            return false;
         }
         
     } catch (error) {
         console.error('fetchPredictionsData: Error caught:', error);
-        console.error('fetchPredictionsData: Error stack:', error.stack);
         // Don't show error to user for predictions - it's background loading
         locationHistory.setPredictionsFromAPI(null);
         // Clear prediction display on error
         updatePredictionDisplay();
+        refreshSliderAfterPredictionsChange();
+        return false;
+    }
+}
+
+// Predictions change the slider's max; keep the current selection (by timestamp) valid
+function refreshSliderAfterPredictionsChange() {
+    if (!historySlider) return;
+    const slider = document.getElementById('history-slider');
+    const filledHistoryCount = locationHistory.getFilledHistoryCount();
+    const wasOnPrediction = slider && filledHistoryCount > 0 && parseInt(slider.value) >= filledHistoryCount;
+    const selectedTimestamp = wasOnPrediction ? historySlider.getCurrentSliderInfo().timestamp : null;
+    historySlider.updateSliderRange();
+    if (wasOnPrediction && !historySlider.setSliderToTimestamp(selectedTimestamp)) {
+        // The selected prediction no longer exists - fall back to "now"
+        historySlider.setSliderValue(filledHistoryCount - 1);
     }
 }
 
@@ -1222,52 +1225,35 @@ async function fetchISSData() {
         lastDataTimestamp = data.timestamp;
         lastRefreshTime = Date.now();
         
-        updateActualLocations(data);
-        console.log('fetchISSData: About to call updateUI with data:', data);
-        console.log('fetchISSData: historySlider exists?', !!historySlider);
-        updateUI(data, false); // Don't skip map pan on initial load
+        updateUI(data, { updateMap: true, skipMapPan: false }); // Pan on initial load
         
         if (historySlider) {
             historySlider.updateSliderRange();
             const filledHistoryCount = locationHistory.getFilledHistoryCount();
             historySlider.setSliderValue(filledHistoryCount - 1, true);
-        } else {
-            console.warn('fetchISSData: historySlider not initialized, skipping slider updates');
         }
         
         document.getElementById('error').style.display = 'none';
         console.log('fetchISSData: Completed successfully');
-        
-        // Mark that initial load is complete and hide loading animation
-        if (isInitialLoad) {
-            isInitialLoad = false;
-            // Wait for map rendering to complete before hiding loading screen
-            requestAnimationFrame(() => {
-                requestAnimationFrame(() => {
-                    hidePredictionsLoading();
-                });
-            });
-        }
-        
-        // Predictions are fetched in parallel in init(), or separately in fetchISSDataWithRetry()
-        // No need to call here to avoid duplicate calls
-        
     } catch (error) {
         console.error('fetchISSData: Error caught:', error);
-        console.error('fetchISSData: Error stack:', error.stack);
+        // Still allow the history slider to drive the map (it is gated on this flag)
+        isCurrentLocationLoaded = true;
+        showLocationUnavailable(null);
+        if (historySlider) {
+            historySlider.updateSliderRange();
+            // Show the newest history entry on the map instead of an empty map
+            const filledHistoryCount = locationHistory.getFilledHistoryCount();
+            if (filledHistoryCount > 0) {
+                historySlider.setSliderValue(filledHistoryCount - 1);
+            }
+        }
         showError(
             'Failed to fetch initial ISS data. Auto-refresh will continue.',
             `Error: ${error.message}`
         );
-        // Mark initial load as complete even on error and hide loading animation
-        if (isInitialLoad) {
-            isInitialLoad = false;
-            requestAnimationFrame(() => {
-                requestAnimationFrame(() => {
-                    hidePredictionsLoading();
-                });
-            });
-        }
+    } finally {
+        isInitialLoad = false;
     }
 }
 
@@ -1291,128 +1277,3 @@ function getCountryFlag(location, countryCode) {
         return '';
     }
 }
-
-// Calculate distance between two lat/lon points using Haversine formula
-function calculateDistance(lat1, lon1, lat2, lon2) {
-    const R = 6371; // Earth's radius in kilometers
-    const dLat = (lat2 - lat1) * Math.PI / 180;
-    const dLon = (lon2 - lon1) * Math.PI / 180;
-    const a = 
-        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-        Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-        Math.sin(dLon / 2) * Math.sin(dLon / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c; // Distance in kilometers
-}
-
-// Convert kilometers to miles
-function kmToMiles(km) {
-    return km * 0.621371;
-}
-
-// Get distance class for styling (now uses miles)
-function getDistanceClass(distanceMiles) {
-    if (distanceMiles <= 6.2) return 'distance-excellent'; // ~10 km
-    if (distanceMiles <= 31.1) return 'distance-good'; // ~50 km
-    if (distanceMiles <= 124.3) return 'distance-fair'; // ~200 km
-    return 'distance-poor';
-}
-
-// Convert degrees to miles
-// Latitude: 1 degree = 69 miles (constant)
-// Longitude: 1 degree = 69 * cos(latitude) miles (varies by latitude)
-function degreesToMilesLat(degrees) {
-    return degrees * 69;
-}
-
-function degreesToMilesLon(degrees, latitude) {
-    return degrees * 69 * Math.cos(latitude * Math.PI / 180);
-}
-
-// Store actual locations for comparison
-const actualLocations = new Map(); // key: timestamp (rounded to 5 min), value: location data
-
-
-// Display predictions for the next hour in the table
-
-// Round timestamp to nearest 5 minutes
-function roundToNearest5Minutes(date) {
-    const rounded = new Date(date);
-    const minutes = rounded.getMinutes();
-    const roundedMinutes = Math.round(minutes / 5) * 5;
-    rounded.setMinutes(roundedMinutes);
-    rounded.setSeconds(0);
-    rounded.setMilliseconds(0);
-    return rounded.toISOString();
-}
-
-// Get prediction timestamp key for matching (rounds to 5-minute intervals)
-function getPredictionKey(timestamp) {
-    const date = new Date(timestamp);
-    // Round to nearest 5 minutes
-    const minutes = date.getMinutes();
-    const roundedMinutes = Math.round(minutes / 5) * 5;
-    const rounded = new Date(date);
-    rounded.setMinutes(roundedMinutes);
-    rounded.setSeconds(0);
-    rounded.setMilliseconds(0);
-    return rounded.toISOString();
-}
-
-// Update actual locations map when new data arrives
-function updateActualLocations(locationData) {
-    if (!locationData || !locationData.timestamp) return;
-    
-    const timestamp = new Date(locationData.timestamp);
-    const roundedTimestamp = roundToNearest5Minutes(timestamp);
-    
-    actualLocations.set(roundedTimestamp, {
-        timestamp: locationData.timestamp,
-        latitude: locationData.latitude,
-        longitude: locationData.longitude,
-        location: locationData.location
-    });
-    
-    // Clean up old entries (keep only last 24 hours)
-    const cutoffTime = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    for (const [key, value] of actualLocations.entries()) {
-        const entryTime = new Date(value.timestamp);
-        if (entryTime < cutoffTime) {
-            actualLocations.delete(key);
-        }
-    }
-    
-}
-
-
-
-// Normalize longitude path to avoid wrapping issues
-// Adjusts longitudes to follow the shortest path, avoiding jumps across ±180°
-function normalizeLongitudePath(points) {
-    if (points.length === 0) return points;
-    
-    const normalized = [[points[0][0], points[0][1]]]; // Start with first point as-is
-    
-    for (let i = 1; i < points.length; i++) {
-        const prevLon = normalized[i - 1][1];
-        let currLon = points[i][1];
-        
-        // Calculate the difference
-        let diff = currLon - prevLon;
-        
-        // If the difference is greater than 180°, we've crossed the date line
-        // Adjust to follow the shorter path
-        if (diff > 180) {
-            currLon -= 360; // Go west instead of east
-        } else if (diff < -180) {
-            currLon += 360; // Go east instead of west
-        }
-        
-        normalized.push([points[i][0], currLon]);
-    }
-    
-    return normalized;
-}
-
-// Prediction path drawing functions removed - predictions not displayed on map
-

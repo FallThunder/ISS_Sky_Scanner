@@ -30,7 +30,7 @@ has the call graph.
 ## Commands
 
 ```bash
-# Tests (Python 3.12). Network tests hit wheretheiss.at / ARISS / BigDataCloud.
+# Tests (Python 3.12). Network tests hit wheretheiss.at / ARISS / CelesTrak.
 pip install -r cloud_functions/tests/requirements-dev.txt \
     $(for f in cloud_functions/iss_api_*/requirements.txt; do echo -r $f; done)
 pytest cloud_functions/tests
@@ -84,6 +84,14 @@ project IAM edits collide.
   positions hours stale while stamping them with the current time. The
   primary source is wheretheiss.at; the fallback is SGP4 on the ARISS TLE
   (CelesTrak as backup). Check any new source against SGP4 before trusting it.
+- **Don't call browser-only APIs from functions.** BigDataCloud's free
+  `reverse-geocode-client` forbids server-side use and started rejecting
+  Cloud Run's IPs (HTTP 400) on 2026-10-25, so every location became
+  "Location details unavailable". Geocoding is now offline: Natural Earth
+  polygons in `iss_api_get_realtime_loc/geodata.json`, rebuilt by
+  `cloud_functions/tools/build_geodata.py`. A position with a placeholder
+  name means geocoding failed; position fetches failing show up as error
+  entries instead.
 - **Timeout budget**: `iss_api_store_realtime_loc` (120s) waits 25s for
   `iss_api_get_realtime_loc`, whose upstream calls are 5s each, then up to 30s
   for predictions. The default function timeout is 30s

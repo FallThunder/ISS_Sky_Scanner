@@ -44,7 +44,7 @@ def iss_api_get_realtime_loc(request):
 
         logger.info(f"Successfully fetched ISS location in {iss_location_duration:.2f} seconds")
 
-        # Get location details from BigDataCloud
+        # Get location details (offline Natural Earth lookup)
         logger.info("Reverse geocoding location...")
         geocode_start = time.time()
         location_details = reverse_geocode(

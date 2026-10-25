@@ -35,7 +35,7 @@ Cloud Scheduler (*/5 min) → Pub/Sub (iss_locator_trigger)
         ↓
 iss_api_store_realtime_loc ──→ iss_api_get_realtime_loc ──→ wheretheiss.at
         │                                  │                 (fallback: TLE + SGP4)
-        │                                  └──→ BigDataCloud reverse geocoding
+        │                                  └──  offline reverse geocoding (Natural Earth)
         ├──→ Firestore: iss_loc_history
         └──→ iss_api_generate_predictions ──→ Firestore: iss_loc_predictions
 
@@ -106,7 +106,7 @@ position query with `valid_only=true`.
 ### AI & External Services
 - **AI Model**: Google Gemini 3.5 Flash-Lite on Vertex AI
 - **ISS Data**: wheretheiss.at, with SGP4 propagation of the ARISS/CelesTrak TLE as fallback
-- **Geocoding**: BigDataCloud Reverse Geocoding API
+- **Geocoding**: Offline, from Natural Earth polygons (`cloud_functions/tools/build_geodata.py`)
 
 ### IoT
 - **Hardware**: ESP32 Development Board
@@ -172,7 +172,7 @@ The system consists of 11 independently deployable Cloud Functions:
 
 1. **iss_api_get_realtime_loc**
    - Fetches current ISS location from wheretheiss.at (TLE/SGP4 fallback)
-   - Reverse geocodes coordinates using BigDataCloud
+   - Reverse geocodes coordinates offline (Natural Earth oceans/seas, countries, states)
    - Returns timestamp, coordinates, and location details
    - [API README](cloud_functions/iss_api_get_realtime_loc/README.md)
 
@@ -517,7 +517,7 @@ curl -X POST "https://your-api-url/iss_api_query_assistant" \
 ### External Services & APIs
 
 - **ISS Location Data**: [Where the ISS at?](https://wheretheiss.at/), TLEs from [ARISS](https://live.ariss.org/) and [CelesTrak](https://celestrak.org/)
-- **Reverse Geocoding**: [BigDataCloud API](https://www.bigdatacloud.com/)
+- **Reverse Geocoding**: [Natural Earth](https://www.naturalearthdata.com/) (public domain)
 - **AI Model**: [Google Gemini](https://ai.google.dev/)
 - **Maps**: [Leaflet.js](https://leafletjs.com/) with [Esri](https://www.esri.com/) tiles
 - **Icons**: [Font Awesome](https://fontawesome.com/)

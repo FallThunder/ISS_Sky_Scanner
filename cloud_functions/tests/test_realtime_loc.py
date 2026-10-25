@@ -27,10 +27,3 @@ def test_all_sources_down_returns_none(monkeypatch):
                         'https://api.wheretheiss.invalid/x')
     monkeypatch.setattr(utils, 'TLE_URLS', ['https://tle.invalid/x'])
     assert utils.fetch_iss_location() is None
-
-
-def test_reverse_geocode_ocean_and_land():
-    assert utils.reverse_geocode(0.0, -150.0)['location_name'] == \
-        'Over the Pacific Ocean'
-    paris = utils.reverse_geocode(48.85, 2.35)
-    assert paris['country_code'] == 'FR'

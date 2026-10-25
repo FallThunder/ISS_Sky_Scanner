@@ -19,7 +19,7 @@ Cloud Scheduler ─→ Pub/Sub topic iss_locator_trigger
                      └─→ iss_api_store_realtime_loc
                            ├─→ iss_api_get_realtime_loc (ID token, 25s timeout)
                            │     ├─→ wheretheiss.at   (fallback: ARISS/CelesTrak TLE + SGP4)
-                           │     └─→ BigDataCloud reverse geocoding (api-bdc.io)
+                           │     └── offline reverse geocoding (Natural Earth, geodata.json)
                            ├─→ Firestore iss_loc_history   (location or error entry)
                            └─→ iss_api_generate_predictions (ID token, valid locations only)
                                  ├─→ ARISS TLE (fetched once per request)

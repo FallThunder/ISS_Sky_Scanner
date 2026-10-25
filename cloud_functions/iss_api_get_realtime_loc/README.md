@@ -6,7 +6,8 @@ This Cloud Function fetches and returns the current location of the Internationa
 
 - Fetches real-time ISS coordinates from wheretheiss.at, falling back to
   SGP4 propagation of the latest TLE if that API is unavailable
-- Reverse geocodes the coordinates using BigDataCloud API
+- Reverse geocodes the coordinates offline from Natural Earth polygons
+  (`geodata.json`): "State, Country" over land, "Over the <sea/ocean>" over water
 - Reports which source answered in the `source` field (`wheretheiss.at` or
   `tle_sgp4`)
 - Bounded upstream timeouts (5s each) so the caller's 25s timeout is never hit
@@ -23,10 +24,9 @@ The API returns a JSON response with the following structure:
     "latitude": 45.12345,
     "longitude": -122.67890,
     "location_details": {
-        "location_name": "San Francisco, California, United States",
-        "raw_data": {
-            // Full BigDataCloud API response
-        }
+        "location_name": "California, United States of America",
+        "country_code": "US",
+        "raw_data": {"country": "United States of America", "state": "California"}
     }
 }
 ```
@@ -113,9 +113,14 @@ This function is internal and requires authentication. It should only be called 
    - Endpoints: `https://live.ariss.org/iss.txt`, then CelesTrak
    - Propagated to the current time with SGP4 (skyfield)
 
-3. **BigDataCloud Reverse Geocoding API**
-   - Endpoint: `https://api-bdc.io/data/reverse-geocode-client` (the old
-     `api.bigdatacloud.net` host now redirects here)
+3. **Reverse geocoding: none (offline)**
+   - `geodata.json` holds simplified [Natural Earth](https://www.naturalearthdata.com/)
+     marine, country and state/province polygons (public domain). Regenerate it
+     with `python cloud_functions/tools/build_geodata.py`.
+   - BigDataCloud's free `reverse-geocode-client` endpoint was used until
+     October 2026. Its terms forbid server-side calls, and it began rejecting
+     Cloud Run's IPs (HTTP 400), so every location came back as
+     "Location details unavailable".
    - Used to get location details from coordinates
    - No authentication required for client version
 

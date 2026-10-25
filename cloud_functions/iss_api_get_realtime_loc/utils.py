@@ -1,10 +1,14 @@
+import json
 import logging
+import os
 import time
 import traceback
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Optional
 
 import requests
+from shapely.geometry import Point, shape
+from shapely.strtree import STRtree
 from skyfield.api import EarthSatellite, load
 
 # Configure logging
@@ -13,8 +17,8 @@ logger = logging.getLogger(__name__)
 
 # Per-request timeout for upstream APIs. The caller
 # (iss_api_store_realtime_loc) waits 25s for this whole function, so the
-# worst case here (live API, TLE fallback + geocode) must stay well under
-# that.
+# worst case here (live API + TLE fallback; geocoding is offline) must stay
+# well under that.
 UPSTREAM_TIMEOUT_SECONDS = 5
 
 WHERE_THE_ISS_URL = 'https://api.wheretheiss.at/v1/satellites/25544'
@@ -22,7 +26,7 @@ TLE_URLS = [
     'https://live.ariss.org/iss.txt',
     'https://celestrak.org/NORAD/elements/gp.php?CATNR=25544&FORMAT=TLE',
 ]
-GEOCODE_URL = 'https://api-bdc.io/data/reverse-geocode-client'
+GEODATA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'geodata.json')
 
 # Note: Open Notify (api.open-notify.org) was dropped as a source. As of
 # October 2026 it returns positions hours out of date while reporting the
@@ -107,72 +111,114 @@ def fetch_iss_location() -> Optional[Dict[str, Any]]:
     return None
 
 
+class _Geocoder:
+    """Offline reverse geocoder over the Natural Earth layers in geodata.json.
+
+    Built lazily on first use (about a second) and reused across requests.
+    """
+
+    def __init__(self, path: str):
+        with open(path) as f:
+            data = json.load(f)
+        self.marine = self._layer(data['marine'])
+        self.countries = self._layer(data['countries'])
+        self.states = self._layer(data['states'])
+        self.country_codes = {c['name']: c['code'] for c in data['countries']}
+
+    @staticmethod
+    def _layer(features: list) -> Dict[str, Any]:
+        geoms = [shape(feat['geometry']) for feat in features]
+        return {
+            'tree': STRtree(geoms),
+            'geoms': geoms,
+            'props': [{k: v for k, v in feat.items() if k != 'geometry'} for feat in features],
+        }
+
+    @staticmethod
+    def _containing(layer: Dict[str, Any], point: Point) -> list:
+        """Indices of the layer's polygons that contain the point."""
+        return [
+            i for i in layer['tree'].query(point)
+            if layer['geoms'][i].covers(point)
+        ]
+
+    def lookup(self, lat: float, lon: float) -> Dict[str, Any]:
+        point = Point(lon, lat)
+
+        country_hits = self._containing(self.countries, point)
+        if country_hits:
+            country = self.countries['props'][country_hits[0]]
+            state_hits = [
+                i for i in self._containing(self.states, point)
+                if self.states['props'][i]['country'] == country['name']
+            ] or self._containing(self.states, point)
+            parts = []
+            if state_hits:
+                parts.append(self.states['props'][state_hits[0]]['name'])
+            parts.append(country['name'])
+            return {
+                'location_name': ', '.join(parts),
+                'country_code': country['code'],
+                'raw_data': {'country': country['name'],
+                             'state': parts[0] if state_hits else None},
+            }
+
+        # The 10m state polygons follow coastlines more closely than the 50m
+        # country polygons, so a coastal point can be in a state only
+        state_hits = self._containing(self.states, point)
+        if state_hits:
+            state = self.states['props'][state_hits[0]]
+            return {
+                'location_name': f"{state['name']}, {state['country']}",
+                'country_code': self.country_codes.get(state['country'], ''),
+                'raw_data': {'country': state['country'], 'state': state['name']},
+            }
+
+        # Over water: prefer the most specific (smallest) containing body,
+        # e.g. "Arabian Sea" over "Indian Ocean"; near coasts the simplified
+        # polygons can leave gaps, so fall back to the nearest body
+        marine_hits = self._containing(self.marine, point)
+        if marine_hits:
+            index = min(marine_hits, key=lambda i: self.marine['geoms'][i].area)
+        else:
+            index = int(self.marine['tree'].nearest(point))
+        water = self.marine['props'][index]
+        return {
+            'location_name': f"Over the {_display_water_name(water['name'])}",
+            'country_code': '',
+            'raw_data': {'water_body': water['name'], 'kind': water['kind']},
+        }
+
+
+def _display_water_name(name: str) -> str:
+    """Natural Earth spells a few names in capitals ("SOUTHERN OCEAN")."""
+    return name.title() if name.isupper() else name
+
+
+_geocoder: Optional[_Geocoder] = None
+
+
 def reverse_geocode(lat: float, lon: float) -> Optional[Dict[str, Any]]:
     """
-    Reverse geocodes coordinates using BigDataCloud API to get location details.
-    Returns location details if successful.
+    Reverse geocodes coordinates offline using Natural Earth polygons
+    (geodata.json, built by cloud_functions/tools/build_geodata.py).
+
+    Returns {'location_name', 'country_code', 'raw_data'}: "State, Country"
+    over land, "Over the <water body>" over water. Returns None on failure.
+
+    BigDataCloud's free client endpoint was dropped in October 2026: its
+    terms forbid server-side use, and it started rejecting Cloud Run's IPs.
     """
-    params = {'latitude': lat, 'longitude': lon, 'localityLanguage': 'en'}
-    request_start = time.time()
-
+    global _geocoder
     try:
-        logger.info(f"Calling BigDataCloud reverse geocoding API for lat={lat}, lon={lon}")
-        response = requests.get(
-            GEOCODE_URL, params=params, timeout=UPSTREAM_TIMEOUT_SECONDS
-        )
-        request_duration = time.time() - request_start
-
-        logger.info(f"BigDataCloud API responded in {request_duration:.2f} seconds with status {response.status_code}")
-        response.raise_for_status()
-        location_data = response.json()
-
-        # Check if it's over a water body
-        locality_info = location_data.get('localityInfo', {}).get('informative', [])
-        water_keywords = ['ocean', 'sea']
-        location_name = None
-        country_code = location_data.get('countryCode', '')  # Get country code
-
-        # First check for water bodies
-        for info in locality_info:
-            name = info.get('name', '').lower()
-            if any(keyword in name for keyword in water_keywords):
-                location_name = f"Over the {info.get('name')}"
-                break
-
-        # If not over water, check for land locations
-        if not location_name:
-            location_components = []
-
-            # Add components in order of specificity
-            if location_data.get('locality'):
-                location_components.append(location_data['locality'])
-            elif location_data.get('city'):
-                location_components.append(location_data['city'])
-
-            if location_data.get('principalSubdivision'):
-                location_components.append(location_data['principalSubdivision'])
-
-            if location_data.get('countryName'):
-                location_components.append(location_data['countryName'])
-
-            location_name = ", ".join(location_components) if location_components else "Over Ocean"
-
-        result = {
-            'location_name': location_name,
-            'country_code': country_code,  # Add country code to the response
-            'raw_data': location_data
-        }
-        logger.info(f"Successfully reverse geocoded location: {location_name}")
+        if _geocoder is None:
+            start = time.time()
+            _geocoder = _Geocoder(GEODATA_PATH)
+            logger.info(f"Loaded offline geocoder in {time.time() - start:.2f}s")
+        result = _geocoder.lookup(lat, lon)
+        logger.info(f"Reverse geocoded ({lat}, {lon}): {result['location_name']}")
         return result
-
-    except requests.exceptions.RequestException as e:
-        logger.error(
-            f"BigDataCloud API request failed after "
-            f"{time.time() - request_start:.2f}s "
-            f"({type(e).__name__}): {e}"
-        )
-        return None
     except Exception as e:
-        logger.error(f"Unexpected error reverse geocoding location: {str(e)}")
+        logger.error(f"Reverse geocoding failed for ({lat}, {lon}): {e}")
         logger.error(f"Traceback: {traceback.format_exc()}")
         return None

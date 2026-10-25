@@ -11,6 +11,9 @@ if [ ! -f "$CONFIG_FILE" ]; then
 fi
 source "$CONFIG_FILE"
 
+# The offline geocoder keeps Natural Earth polygons in memory
+MEMORY="512MB"
+
 # Function-specific configuration
 FUNCTION_NAME="iss_api_get_realtime_loc"
 

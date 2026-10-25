@@ -99,18 +99,29 @@ You are a full stack senior developer with expertise in Python, JavaScript, Type
 
 # Project Architecture
 
+See CLAUDE.md for the operational details (call flow, data contracts,
+testing, deployment order and known pitfalls).
+
 ## Data Store
-This project uses a Firestore database named '(default)' with a collection named `iss_loc_history` to store the location history of the International Space Station.
+This project uses a Firestore database named '(default)' with these collections:
+- `iss_loc_history` - one entry per 5-minute fetch. Failed fetches are stored as error entries (`is_error_entry: true`, `isEmpty: true`, null coordinates).
+- `iss_loc_predictions` - one document per 5-minute source timestamp holding 19 orbital-mechanics predictions (+5 to +95 minutes).
+- `iss_sky_scanner_feedback` - user feedback.
 
 ## APIs
-All APIs are written using Python/Flask and deployed as Google Cloud Functions:
+All APIs are written using Python/Flask and deployed as Google Cloud Functions (2nd gen, `python312`):
 
-1. **iss_api_get_realtime_loc** - Fetches current ISS location from public API and determines what it's flying over
-2. **iss_api_store_realtime_loc** - Stores ISS location data in Firestore (runs every 5 minutes via pub/sub)
-3. **iss_api_get_loc_fact** - Uses Gemini 1.5 Flash to find fun facts about locations
-4. **iss_api_get_last_stored_loc** - Retrieves the latest entry from Firestore
-5. **iss_api_bff_esp** - Backend for ESP IoT app, combining location and fun facts
-6. **iss_api_bff_web** - Backend for web app, combining location and fun facts
+1. **iss_api_get_realtime_loc** - Fetches the current ISS location (wheretheiss.at, falling back to SGP4 propagation of the ARISS/CelesTrak TLE) and reverse geocodes it (BigDataCloud)
+2. **iss_api_store_realtime_loc** - Pub/Sub-triggered every 5 minutes; stores the location (or an error entry) in Firestore, then calls iss_api_generate_predictions
+3. **iss_api_generate_predictions** - Generates and stores orbital-mechanics predictions
+4. **iss_api_get_loc_fact** - Uses Gemini 3.5 Flash-Lite (Vertex AI, google-genai SDK) to find fun facts about locations
+5. **iss_api_query_loc_history** - Filtered history queries (`valid_only=true` skips error entries)
+6. **iss_api_query_time_range** - Public: last N minutes of history for the web app
+7. **iss_api_store_feedback** - Stores feedback (internal)
+8. **iss_api_query_assistant** - Public: Gemini-powered chat assistant
+9. **iss_api_bff_web** - Backend for web app, combining the latest valid location and a fun fact
+10. **iss_api_bff_web_predictions** - Backend for web app, current and historical predictions
+11. **iss_api_bff_esp** - Backend for ESP IoT app, combining the latest valid location and a fun fact
 
 ## Technology Stack
 
@@ -122,7 +133,7 @@ All APIs are written using Python/Flask and deployed as Google Cloud Functions:
 
 ### Web Tier
 1. Built using HTML, CSS and JavaScript
-2. Read-only frontend (no write-backs to APIs)
+2. Static frontend in docs/ (GitHub Pages); only reads data, apart from chat/feedback submissions
 
 ### Security
 1. BFFs (backend for frontend) are publicly exposed with API key protection

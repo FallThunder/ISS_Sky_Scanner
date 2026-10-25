@@ -46,8 +46,9 @@ If an error occurs, the API returns a simplified error format suitable for ESP:
 
 This BFF integrates with:
 
-1. `iss_api_get_last_stored_loc`:
-   - Provides the most recent ISS location
+1. `iss_api_query_loc_history` (`?limit=1&valid_only=true`):
+   - Provides the most recent valid ISS location (skips failed-fetch
+     error entries)
    - Returns coordinates and location name
 
 2. `iss_api_get_loc_fact`:

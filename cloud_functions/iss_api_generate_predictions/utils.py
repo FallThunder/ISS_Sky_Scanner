@@ -25,6 +25,7 @@ collection_name = 'iss_loc_predictions'
 DEFAULT_INCLINATION = 51.6  # degrees
 DEFAULT_ORBITAL_PERIOD = 92.9  # minutes
 DEFAULT_TIME_INTERVAL = 5.0  # minutes between data points
+MAX_PREVIOUS_LOOKBACK_MINUTES = 30  # older points can't give a velocity
 
 # Earth rotation rate
 EARTH_ROTATION_RATE = 360 / (24 * 60)  # degrees per minute = 0.25
@@ -100,16 +101,23 @@ def get_sgp4_position(tle_line1: str, tle_line2: str,
         return None
 
 
-def load_tle_parameters() -> Dict[str, float]:
+def load_tle_parameters(
+    tle_data: Optional[Tuple[str, str]] = None
+) -> Dict[str, float]:
     """
-    Fetch and parse TLE data from ARISS to get orbital parameters.
-    
+    Parse TLE data (fetched from ARISS if not provided) to get orbital
+    parameters.
+
+    Args:
+        tle_data: Optional (tle_line1, tle_line2) already fetched
+
     Returns:
         Dictionary with 'inclination' (degrees) and 'orbital_period' (minutes)
         Falls back to defaults if fetch fails or data is invalid
     """
     try:
-        tle_data = fetch_tle_data()
+        if tle_data is None:
+            tle_data = fetch_tle_data()
         if not tle_data:
             logger.warning("Could not fetch TLE data, using defaults")
             return _default_params()
@@ -228,7 +236,8 @@ def calculate_ascending_node_longitude(current_lon: float, current_phase: float,
 def predict_position(current_lat: float, current_lon: float,
                      previous_lat: float, previous_lon: float,
                      minutes_ahead: float,
-                     time_interval_minutes: float = DEFAULT_TIME_INTERVAL) -> Dict:
+                     time_interval_minutes: float = DEFAULT_TIME_INTERVAL,
+                     tle_params: Optional[Dict[str, float]] = None) -> Dict:
     """
     Predict ISS latitude and longitude at a future time using orbital mechanics.
     
@@ -239,12 +248,14 @@ def predict_position(current_lat: float, current_lon: float,
         previous_lon: Previous longitude in degrees
         minutes_ahead: Minutes into the future to predict
         time_interval_minutes: Time interval between current and previous points
+        tle_params: Orbital parameters from load_tle_parameters(); fetched
+            if not provided
     
     Returns:
         Dictionary with predicted latitude and longitude
     """
-    # Load TLE parameters
-    tle_params = load_tle_parameters()
+    if tle_params is None:
+        tle_params = load_tle_parameters()
     inclination = tle_params['inclination']
     orbital_period = tle_params['orbital_period']
     inc_rad = math.radians(inclination)
@@ -290,45 +301,86 @@ def predict_position(current_lat: float, current_lon: float,
 
 def get_previous_location(source_timestamp: str) -> Optional[Dict[str, Any]]:
     """
-    Get the previous location entry from Firestore to calculate velocity.
-    
+    Get the most recent valid location stored before source_timestamp
+    (within MAX_PREVIOUS_LOOKBACK_MINUTES) to calculate velocity.
+
+    Error entries (is_error_entry / null coordinates) are skipped, so a
+    failed fetch five minutes ago doesn't block predictions now.
+
     Args:
         source_timestamp: ISO format timestamp of current location
-        
+
     Returns:
         Dictionary with previous location data or None if not found
     """
     try:
         logger.info("Fetching previous location from Firestore...")
-        
-        # Parse source timestamp
+
         source_dt = datetime.fromisoformat(source_timestamp.replace('Z', '+00:00'))
-        
-        # Query for the most recent entry before source_timestamp
+        earliest = (
+            source_dt - timedelta(minutes=MAX_PREVIOUS_LOOKBACK_MINUTES)
+        ).isoformat()
+
         query = db.collection('iss_loc_history')\
             .where('timestamp', '<', source_timestamp)\
-            .order_by('timestamp', direction=firestore.Query.DESCENDING)\
-            .limit(1)
-        
-        docs = list(query.stream())
-        
-        if not docs:
-            logger.warning("No previous location found in Firestore")
-            return None
-        
-        doc = docs[0]
-        data = doc.to_dict()
-        
-        logger.info(f"Found previous location at timestamp: {data.get('timestamp')}")
-        return {
-            'timestamp': data.get('timestamp'),
-            'latitude': data.get('latitude'),
-            'longitude': data.get('longitude')
-        }
-        
+            .where('timestamp', '>=', earliest)\
+            .order_by('timestamp', direction=firestore.Query.DESCENDING)
+
+        for doc in query.stream():
+            data = doc.to_dict()
+            if data.get('is_error_entry'):
+                continue
+            if data.get('latitude') is None or data.get('longitude') is None:
+                continue
+
+            logger.info(f"Found previous location at timestamp: {data.get('timestamp')}")
+            return {
+                'timestamp': data.get('timestamp'),
+                'latitude': data.get('latitude'),
+                'longitude': data.get('longitude')
+            }
+
+        logger.warning(
+            f"No valid previous location in the last "
+            f"{MAX_PREVIOUS_LOOKBACK_MINUTES} minutes"
+        )
+        return None
+
     except Exception as e:
         logger.error(f"Error fetching previous location: {str(e)}")
         return None
+
+
+def get_sgp4_previous_location(
+    tle_data: Optional[Tuple[str, str]],
+    source_dt: datetime
+) -> Optional[Dict[str, Any]]:
+    """
+    Fallback for get_previous_location: derives the ISS position
+    DEFAULT_TIME_INTERVAL minutes before source_dt from the TLE via SGP4.
+    Used when there is no recent stored location (e.g. after an outage).
+
+    Args:
+        tle_data: (tle_line1, tle_line2) or None
+        source_dt: Timezone-aware datetime of the current location
+
+    Returns:
+        Dictionary with timestamp, latitude and longitude, or None
+    """
+    if not tle_data:
+        return None
+
+    previous_dt = source_dt - timedelta(minutes=DEFAULT_TIME_INTERVAL)
+    position = get_sgp4_position(tle_data[0], tle_data[1], previous_dt)
+    if not position:
+        return None
+
+    logger.info(f"Using SGP4-derived previous position at {previous_dt.isoformat()}")
+    return {
+        'timestamp': previous_dt.isoformat(),
+        'latitude': position['latitude'],
+        'longitude': position['longitude']
+    }
 
 
 def round_timestamp_to_5_minutes(iso_timestamp: str) -> str:
@@ -391,12 +443,21 @@ def generate_predictions(
         # Parse rounded timestamp for calculations (to ensure all predictions are on 5-minute boundaries)
         source_dt_rounded = datetime.fromisoformat(rounded_timestamp.replace('Z', '+00:00'))
         
+        # Fetch the TLE once; it drives both the orbital parameters and the
+        # SGP4 fallback for the previous position
+        tle_data = fetch_tle_data()
+        tle_params = load_tle_parameters(tle_data)
+
         # Get previous location to calculate velocity for orbital mechanics predictions
         # Use original timestamp for querying (to find the actual previous location)
-        previous_location = get_previous_location(source_timestamp)
-        
+        source_dt = datetime.fromisoformat(source_timestamp.replace('Z', '+00:00'))
+        previous_location = (
+            get_previous_location(source_timestamp)
+            or get_sgp4_previous_location(tle_data, source_dt)
+        )
+
         if not previous_location:
-            error_msg = "Cannot generate predictions: previous location not found in Firestore. Need at least 2 location points to calculate velocity."
+            error_msg = "Cannot generate predictions: no recent previous location in Firestore and SGP4 fallback unavailable. Need at least 2 location points to calculate velocity."
             logger.error(error_msg)
             return {'error': error_msg}
         
@@ -405,9 +466,10 @@ def generate_predictions(
         logger.info(f"Using stored previous position: lat={previous_lat:.4f}, lon={previous_lon:.4f}")
         
         # Calculate time interval between current and previous location
-        # Use rounded timestamp for consistency
+        # using the actual (unrounded) source time, since the velocity is
+        # derived from the actual source coordinates
         previous_dt = datetime.fromisoformat(previous_location['timestamp'].replace('Z', '+00:00'))
-        time_interval_minutes = (source_dt_rounded - previous_dt).total_seconds() / 60.0
+        time_interval_minutes = (source_dt - previous_dt).total_seconds() / 60.0
         
         # Ensure reasonable time interval (should be around 5 minutes)
         if time_interval_minutes <= 0:
@@ -429,15 +491,20 @@ def generate_predictions(
             future_dt = source_dt_rounded + timedelta(minutes=minutes_ahead)
             future_timestamp = future_dt.isoformat()
             future_timestamp_unix = int(future_dt.timestamp())
-            
+
+            # The source fix was taken slightly after the rounded boundary,
+            # so propagate from the actual fix time to the labelled time
+            minutes_from_source = (future_dt - source_dt).total_seconds() / 60.0
+
             # Use orbital mechanics to predict position
             prediction_result = predict_position(
                 current_lat=source_latitude,
                 current_lon=source_longitude,
                 previous_lat=previous_lat,
                 previous_lon=previous_lon,
-                minutes_ahead=minutes_ahead,
-                time_interval_minutes=time_interval_minutes
+                minutes_ahead=minutes_from_source,
+                time_interval_minutes=time_interval_minutes,
+                tle_params=tle_params
             )
             
             prediction = {

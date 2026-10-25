@@ -14,7 +14,7 @@ function setStatus(elementId, message, isError = false) {
 }
 
 function formatCoord(value) {
-    if (value === null || value === undefined || Number.isNaN(value)) {
+    if (value === null || value === undefined || !Number.isFinite(Number(value))) {
         return '—';
     }
     return Number(value).toFixed(4);
@@ -28,12 +28,16 @@ function formatTimestamp(ts) {
 }
 
 function isValidCoord(value) {
-    return value !== null && value !== undefined && !Number.isNaN(Number(value));
+    return value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
 }
 
 async function fetchHistory() {
     const url = `${API_CONFIG.HISTORY_RANGE_URL}?minutes=90`;
     const response = await fetch(url);
+    if (response.status === 404) {
+        // API returns 404 when there are no rows in the window
+        return [];
+    }
     if (!response.ok) {
         throw new Error(`History API returned ${response.status}`);
     }
@@ -48,7 +52,7 @@ async function fetchHistoricalPredictions() {
         throw new Error(`Predictions API returned ${response.status}`);
     }
     const data = await response.json();
-    return data?.historical_predictions || data?.predictions || {};
+    return data?.historical_predictions || {};
 }
 
 function normalizeHistory(history) {
@@ -60,7 +64,16 @@ function normalizeHistory(history) {
         return { locations: [], newest: null };
     }
 
-    const sorted = [...filtered].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    // The API can return duplicate rows per timestamp; keep one row per timestamp
+    const byTime = new Map();
+    filtered.forEach((loc) => {
+        const key = new Date(loc.timestamp).getTime();
+        if (!Number.isNaN(key) && !byTime.has(key)) {
+            byTime.set(key, loc);
+        }
+    });
+
+    const sorted = [...byTime.values()].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
     const newestTime = new Date(sorted[0].timestamp);
 
     return { locations: sorted, newest: newestTime };
@@ -146,10 +159,20 @@ export async function initMetricsTables() {
     setStatus('metrics-table-lon-status', 'Loading...');
 
     try {
-        const [historyLocations, predictionsByAge] = await Promise.all([
+        // Predictions failing shouldn't hide the actual positions (and vice versa)
+        const [historyResult, predictionsResult] = await Promise.allSettled([
             fetchHistory(),
             fetchHistoricalPredictions()
         ]);
+
+        if (historyResult.status === 'rejected') {
+            throw historyResult.reason;
+        }
+        if (predictionsResult.status === 'rejected') {
+            console.warn('[metrics-table] Predictions unavailable:', predictionsResult.reason);
+        }
+        const historyLocations = historyResult.value;
+        const predictionsByAge = predictionsResult.status === 'fulfilled' ? predictionsResult.value : {};
 
         const { locations, newest } = normalizeHistory(historyLocations);
 
@@ -166,7 +189,8 @@ export async function initMetricsTables() {
         renderTable('metrics-table-lat', rows, 'latitude');
         renderTable('metrics-table-lon', rows, 'longitude');
 
-        const statusText = `Rows: ${rows.length} · Updated ${formatTimestamp(newest)}`;
+        const predictionsNote = predictionsResult.status === 'rejected' ? ' · Predictions unavailable' : '';
+        const statusText = `Rows: ${rows.length} · Updated ${formatTimestamp(newest)}${predictionsNote}`;
         setStatus('metrics-table-lat-status', statusText);
         setStatus('metrics-table-lon-status', statusText);
     } catch (error) {

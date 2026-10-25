@@ -23,8 +23,8 @@ def iss_api_get_realtime_loc(request):
     request_start_time = time.time()
     
     try:
-        # Get ISS location from NASA API
-        logger.info("Fetching ISS location from NASA API...")
+        # Get ISS location (wheretheiss.at, falling back to TLE propagation)
+        logger.info("Fetching ISS location...")
         iss_location_start = time.time()
         iss_location = fetch_iss_location()
         iss_location_duration = time.time() - iss_location_start
@@ -35,9 +35,9 @@ def iss_api_get_realtime_loc(request):
                 'nasa_api_duration_seconds': round(iss_location_duration, 2),
                 'error_timestamp': time.time()
             }
-            logger.error(f"Failed to fetch ISS location from NASA API after {iss_location_duration:.2f} seconds")
+            logger.error(f"Failed to fetch ISS location from all sources after {iss_location_duration:.2f} seconds")
             return jsonify({
-                'error': 'Failed to fetch ISS location from NASA API',
+                'error': 'Failed to fetch ISS location from all upstream sources',
                 'error_type': 'nasa_api_failure',
                 'error_details': error_details
             }), 500
@@ -64,6 +64,7 @@ def iss_api_get_realtime_loc(request):
             'latitude': iss_location['latitude'],
             'longitude': iss_location['longitude'],
             'location_details': location_details if location_details else 'Location details unavailable',
+            'source': iss_location.get('source'),
             'timing': {
                 'nasa_api_duration_seconds': round(iss_location_duration, 2),
                 'geocode_duration_seconds': round(geocode_duration, 2),

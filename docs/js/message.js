@@ -26,34 +26,32 @@ class MessageBox {
     }
 
     async fetchMessage() {
+        // The banner is optional: any failure (missing bucket/object, network, CORS)
+        // just leaves it hidden, with a single debug line.
         try {
-            console.log('%c Fetching message from: ' + this.messageUrl, 'background: #222; color: #bada55; padding: 2px;');
             const response = await fetch(this.messageUrl, {
                 cache: 'no-store' // Disable caching
             });
             
             if (!response.ok) {
-                console.warn('%c Failed to fetch website message:', 'background: #222; color: #ff9900; padding: 2px;', response.status, response.statusText);
+                console.debug('Website message unavailable:', response.status);
                 return;
             }
 
-            const message = await response.text();
-            console.log('%c Received message: ' + message, 'background: #222; color: #bada55; padding: 2px;');
+            const message = (await response.text()).trim();
             
             // Only show if message is not empty
-            if (message.trim()) {
-                this.showMessage(message.trim());
+            if (message) {
+                this.showMessage(message);
             } else {
-                console.log('%c Message is empty, hiding message box', 'background: #222; color: #bada55; padding: 2px;');
                 this.hideMessage();
             }
         } catch (error) {
-            console.warn('%c Error fetching website message:', 'background: #222; color: #ff0000; padding: 2px;', error);
+            console.debug('Website message unavailable:', error.message);
         }
     }
 
     showMessage(message) {
-        console.log('%c Showing message box with text: ' + message, 'background: #222; color: #bada55; padding: 2px;');
         if (!this.content || !this.container) {
             console.error('%c Error: Required elements not found!', 'background: #222; color: #ff0000; padding: 2px;');
             return;
@@ -63,7 +61,6 @@ class MessageBox {
     }
 
     hideMessage() {
-        console.log('%c Hiding message box', 'background: #222; color: #bada55; padding: 2px;');
         if (this.container) {
             this.container.style.display = 'none';
         }
@@ -72,6 +69,5 @@ class MessageBox {
 
 // Initialize when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
-    console.log('%c Initializing message box...', 'background: #222; color: #bada55; padding: 2px;');
     new MessageBox();
 });

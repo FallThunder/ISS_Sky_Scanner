@@ -160,7 +160,7 @@ class HistorySlider {
         backButtons.forEach(id => {
             const button = document.getElementById(id);
             if (button) {
-                button.disabled = currentValue <= 0;
+                button.disabled = slider.disabled || currentValue <= 0;
             }
         });
 
@@ -174,7 +174,7 @@ class HistorySlider {
         forwardButtons.forEach(id => {
             const button = document.getElementById(id);
             if (button) {
-                button.disabled = currentValue >= maxValue;
+                button.disabled = slider.disabled || currentValue >= maxValue;
             }
         });
     }
@@ -218,9 +218,15 @@ class HistorySlider {
         const filledHistoryCount = this.locationHistory.getFilledHistoryCount();
         const predictionsCount = this.locationHistory.getPredictions().length;
         const oldMax = parseInt(slider.max) || 0;
-        const newMax = allLocations.length - 1;
+        const newMax = Math.max(allLocations.length - 1, 0);
         
         slider.max = newMax;
+        // Nothing to scrub through when there is no history or predictions
+        slider.disabled = allLocations.length === 0;
+        if (allLocations.length === 0) {
+            const timeDisplay = document.getElementById('time-display');
+            if (timeDisplay) timeDisplay.textContent = 'No history available';
+        }
         
         console.log('Updated slider range - Old max:', oldMax, 'New max:', newMax, 'Total locations count:', allLocations.length, 'Filled history count:', filledHistoryCount, 'Predictions count:', predictionsCount);
         console.log('Slider range: 0 to', newMax, '(Current time at position', filledHistoryCount - 1, ')');
@@ -332,17 +338,18 @@ class HistorySlider {
         };
     }
 
-    // Find and set slider to a specific timestamp
-    setSliderToTimestamp(targetTimestamp) {
+    // Find and set slider to a specific timestamp (matched on its 5-minute slot)
+    setSliderToTimestamp(targetTimestamp, skipMapUpdate = false) {
+        if (!targetTimestamp) return false;
+        const slot = (ts) => Math.floor(new Date(ts).getTime() / (5 * 60 * 1000));
+        const targetSlot = slot(targetTimestamp);
         const allLocations = this.locationHistory.getAllLocations();
-        const targetIndex = allLocations.findIndex(loc => 
-            new Date(loc.timestamp).getTime() === new Date(targetTimestamp).getTime()
-        );
+        const targetIndex = allLocations.findIndex(loc => slot(loc.timestamp) === targetSlot);
         
         if (targetIndex !== -1) {
-            const sliderValue = allLocations.length - 1 - targetIndex;
-            this.setSliderValue(sliderValue);
-            console.log('Set slider to timestamp:', targetTimestamp, 'at index:', targetIndex, 'slider value:', sliderValue);
+            // Slider value == array index (oldest history -> latest prediction, no inversion)
+            this.setSliderValue(targetIndex, skipMapUpdate);
+            console.log('Set slider to timestamp:', targetTimestamp, 'at index:', targetIndex);
             return true;
         }
         

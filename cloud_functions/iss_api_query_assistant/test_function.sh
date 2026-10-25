@@ -97,7 +97,8 @@ RESPONSE=$(curl -s -X POST "${FUNCTION_URL}" \
         "query": "What is the weather like today?"
     }')
 echo "Response: ${RESPONSE}"
-if [[ $RESPONSE == *"success"* && $RESPONSE == *"can only answer questions about the International Space Station"* ]]; then
+# The system prompt requires action "none" for non-ISS questions; the wording varies
+if [[ $RESPONSE == *"success"* && $RESPONSE =~ action[^a-z]+none ]]; then
     echo -e "${GREEN}✅ Test 5 passed: Non-ISS query was properly handled${NC}"
 else
     echo -e "${RED}❌ Test 5 failed: Non-ISS query was not properly handled${NC}"

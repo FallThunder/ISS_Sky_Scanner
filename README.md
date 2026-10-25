@@ -16,10 +16,11 @@ A real-time International Space Station (ISS) tracking system with location hist
 
 ## Features
 
-- **Real-time ISS Tracking**: Live location updates every 5 minutes with coordinates and location names
-- **Interactive History Slider**: Browse past ISS locations with a time-based slider (up to 24 hours in the past)
-- **Future Position Predictions**: Predict ISS locations up to 24 hours ahead using orbital mechanics
-- **AI-Powered Chat Assistant**: Ask questions about ISS location history using Google Gemini 1.5 Flash
+- **Real-time ISS Tracking**: Location stored every 5 minutes with coordinates and location names
+- **Interactive History Slider**: Browse ISS locations from 24 hours in the past to 90 minutes in the future
+- **Future Position Predictions**: Predict ISS locations up to 95 minutes ahead using orbital mechanics
+- **Prediction Metrics**: Compare actual positions against predictions made 30, 60 and 90 minutes earlier
+- **AI-Powered Chat Assistant**: Ask questions about ISS location history using Google Gemini 3.5 Flash-Lite
 - **Location-Based Fun Facts**: Automatically generated interesting facts about locations the ISS passes over
 - **Interactive World Map**: Visualize ISS location on a dark-themed Leaflet map with world wrap support
 - **ESP32 Hardware Display**: Physical display showing ISS location and fun facts on a 16x2 RGB LCD
@@ -30,18 +31,26 @@ A real-time International Space Station (ISS) tracking system with location hist
 The system follows a microservices architecture with clear separation of concerns:
 
 ```
-ISS Public API → iss_api_get_realtime_loc → iss_api_store_realtime_loc → Firestore
-                                                      ↓
-                                            (Every 5 minutes via Pub/Sub)
-                                                      ↓
-                                    iss_api_get_last_stored_loc ← iss_api_get_loc_fact
-                                                      ↓
-                                    ┌─────────────────┴─────────────────┐
-                                    ↓                                   ↓
-                            iss_api_bff_web                    iss_api_bff_esp
-                                    ↓                                   ↓
-                              Web Interface                    ESP32 Display
+Cloud Scheduler (*/5 min) → Pub/Sub (iss_locator_trigger)
+        ↓
+iss_api_store_realtime_loc ──→ iss_api_get_realtime_loc ──→ wheretheiss.at
+        │                                  │                 (fallback: TLE + SGP4)
+        │                                  └──→ BigDataCloud reverse geocoding
+        ├──→ Firestore: iss_loc_history
+        └──→ iss_api_generate_predictions ──→ Firestore: iss_loc_predictions
+
+Web app (docs/)
+  ├── iss_api_bff_web ──────────→ iss_api_query_loc_history + iss_api_get_loc_fact (Gemini)
+  ├── iss_api_bff_web_predictions → Firestore: iss_loc_predictions
+  ├── iss_api_query_time_range ──→ Firestore: iss_loc_history
+  └── iss_api_query_assistant ───→ Gemini API + iss_api_query_loc_history
+
+ESP32 display → iss_api_bff_esp → iss_api_query_loc_history + iss_api_get_loc_fact
 ```
+
+Failed location fetches are stored as error entries (`is_error_entry: true`,
+null coordinates) so the history shows gaps; consumers that need a real
+position query with `valid_only=true`.
 
 ### Component Breakdown
 
@@ -64,11 +73,13 @@ ISS Public API → iss_api_get_realtime_loc → iss_api_store_realtime_loc → F
    - Automatic timezone detection
 
 4. **Database (Firestore)**
-   - Collection: `iss_loc_history`
-   - Stores timestamp, coordinates, location details, country codes
-   - Enables historical queries and analysis
+   - `iss_loc_history`: timestamp, coordinates, location name, country code
+     (plus error entries for failed fetches)
+   - `iss_loc_predictions`: one document per 5-minute source timestamp with
+     19 predictions (+5 to +95 minutes)
+   - `iss_sky_scanner_feedback`: user feedback
 
-5. **AI Services (Gemini 1.5 Flash)**
+5. **AI Services (Gemini 3.5 Flash-Lite)**
    - Location fact generation
    - Natural language query processing
    - Database query generation from user questions
@@ -76,7 +87,7 @@ ISS Public API → iss_api_get_realtime_loc → iss_api_store_realtime_loc → F
 ## Technology Stack
 
 ### Backend
-- **Language**: Python 3.10
+- **Language**: Python 3.12 (Cloud Functions runtime `python312`)
 - **Framework**: Flask (via functions-framework)
 - **Platform**: Google Cloud Functions (2nd generation)
 - **Authentication**: Google Cloud IAM, API keys via Secret Manager
@@ -84,7 +95,7 @@ ISS Public API → iss_api_get_realtime_loc → iss_api_store_realtime_loc → F
 
 ### Frontend
 - **Languages**: HTML5, CSS3, JavaScript (ES6 modules)
-- **Maps**: Leaflet.js with CartoDB dark theme
+- **Maps**: Leaflet.js with Esri dark gray canvas tiles
 - **Icons**: Font Awesome
 - **Architecture**: Modular JavaScript with classes
 
@@ -93,8 +104,8 @@ ISS Public API → iss_api_get_realtime_loc → iss_api_store_realtime_loc → F
 - **Structure**: Document-based NoSQL
 
 ### AI & External Services
-- **AI Model**: Google Gemini 1.5 Flash
-- **ISS Data**: Open Notify API
+- **AI Model**: Google Gemini 3.5 Flash-Lite on Vertex AI
+- **ISS Data**: wheretheiss.at, with SGP4 propagation of the ARISS/CelesTrak TLE as fallback
 - **Geocoding**: BigDataCloud Reverse Geocoding API
 
 ### IoT
@@ -113,35 +124,34 @@ ISS Public API → iss_api_get_realtime_loc → iss_api_store_realtime_loc → F
 
 ```
 ISS_Sky_Scanner/
-├── cloud_functions/          # Backend APIs
-│   ├── config/                # Deployment configuration
-│   ├── iss_api_bff_esp/       # BFF for ESP32 IoT app
-│   ├── iss_api_bff_web/       # BFF for web app
-│   ├── iss_api_get_loc_fact/  # Gemini fact generation
-│   ├── iss_api_get_realtime_loc/  # Fetch current ISS location
-│   ├── iss_api_query_assistant/   # AI chat assistant
-│   ├── iss_api_query_loc_history/ # Query location history
-│   ├── iss_api_query_time_range/  # Query by time range
-│   ├── iss_api_store_feedback/    # Store user feedback
-│   └── iss_api_store_realtime_loc/ # Store location in Firestore
-├── docs/                      # Web frontend
-│   ├── assets/               # Images and icons
-│   ├── css/                  # Stylesheets
-│   ├── js/                   # JavaScript modules
-│   │   ├── config.js         # API configuration
-│   │   ├── main.js           # Main application logic
-│   │   ├── chat.js           # Chat widget
-│   │   ├── locationHistory.js # History management
-│   │   ├── historySlider.js  # Slider component
-│   │   ├── issPrediction.js  # Orbital prediction
-│   │   └── message.js        # Message handling
-│   └── index.html            # Main HTML file
-├── iss_display_apps/         # IoT applications
-│   └── iss_esp_display/      # ESP32 display app
-│       ├── src/              # Source code
-│       ├── include/          # Headers (secrets.h)
-│       └── platformio.ini    # PlatformIO config
-└── ISS_Tracker_Call_Flow.md  # Architecture documentation
+├── cloud_functions/                  # Backend APIs (one deployable function per dir)
+│   ├── config/                       # Shared deploy config + deploy_all_functions.sh
+│   ├── tests/                        # pytest suite for the functions
+│   ├── iss_api_bff_esp/              # BFF for ESP32 IoT app
+│   ├── iss_api_bff_web/              # BFF for web app (location + fun fact)
+│   ├── iss_api_bff_web_predictions/  # BFF for web app (predictions)
+│   ├── iss_api_generate_predictions/ # Orbital mechanics predictions
+│   ├── iss_api_get_loc_fact/         # Gemini fact generation
+│   ├── iss_api_get_realtime_loc/     # Fetch current ISS location
+│   ├── iss_api_query_assistant/      # AI chat assistant
+│   ├── iss_api_query_loc_history/    # Query location history
+│   ├── iss_api_query_time_range/     # Query by time range (public)
+│   ├── iss_api_store_feedback/       # Store user feedback
+│   └── iss_api_store_realtime_loc/   # Scheduled: store location + trigger predictions
+├── docs/                             # Web frontend (GitHub Pages)
+│   ├── css/                          # Stylesheets
+│   ├── js/
+│   │   ├── config.js                 # API configuration
+│   │   ├── main.js                   # Map view: map, slider, auto-refresh
+│   │   ├── locationHistory.js        # 24h history fetch/normalisation
+│   │   ├── historySlider.js          # Slider component
+│   │   ├── metricsTable*.js          # Metrics Tables view
+│   │   ├── chat.js                   # Chat assistant (also takes feedback)
+│   │   └── message.js                # Website message banner
+│   └── index.html
+├── iss_display_apps/
+│   └── iss_esp_display/              # ESP32 display (PlatformIO)
+└── ISS_Tracker_Call_Flow.md          # Call flow documentation
 ```
 
 ### Naming Conventions
@@ -156,12 +166,12 @@ ISS_Sky_Scanner/
 
 ## APIs
 
-The system consists of 10 independently deployable Cloud Functions:
+The system consists of 11 independently deployable Cloud Functions:
 
 ### Internal APIs (Require Authentication)
 
 1. **iss_api_get_realtime_loc**
-   - Fetches current ISS location from Open Notify API
+   - Fetches current ISS location from wheretheiss.at (TLE/SGP4 fallback)
    - Reverse geocodes coordinates using BigDataCloud
    - Returns timestamp, coordinates, and location details
    - [API README](cloud_functions/iss_api_get_realtime_loc/README.md)
@@ -169,11 +179,12 @@ The system consists of 10 independently deployable Cloud Functions:
 2. **iss_api_store_realtime_loc**
    - Triggered by Pub/Sub every 5 minutes
    - Calls `iss_api_get_realtime_loc` and stores data in Firestore
-   - Handles location data persistence
+   - Stores an error entry if the fetch fails
+   - Then calls `iss_api_generate_predictions`
    - [API README](cloud_functions/iss_api_store_realtime_loc/README.md)
 
 3. **iss_api_get_loc_fact**
-   - Uses Gemini 1.5 Flash to generate fun facts about locations
+   - Uses Gemini 3.5 Flash-Lite (Vertex AI) to generate fun facts about locations
    - Accepts location name as parameter
    - Returns formatted fact with metadata
    - [API README](cloud_functions/iss_api_get_loc_fact/README.md)
@@ -193,18 +204,29 @@ The system consists of 10 independently deployable Cloud Functions:
 6. **iss_api_store_feedback**
    - Stores user feedback in Firestore
    - Validates feedback data structure
-   - CORS-enabled with API key protection
+   - IAM-protected (plus an API key); not callable from the browser
    - [API README](cloud_functions/iss_api_store_feedback/README.md)
+
+7. **iss_api_generate_predictions**
+   - Called by `iss_api_store_realtime_loc` after each stored location
+   - Generates 19 orbital-mechanics predictions (+5 to +95 minutes)
+   - Stores them in `iss_loc_predictions`
+   - [API README](cloud_functions/iss_api_generate_predictions/README.md)
 
 ### Backend-for-Frontend (BFF) APIs (Public with API Keys)
 
-7. **iss_api_bff_web**
+8. **iss_api_bff_web**
    - Aggregates data for web application
    - Combines location data with fun facts
    - CORS-enabled, API key protected
    - [API README](cloud_functions/iss_api_bff_web/README.md)
 
-8. **iss_api_bff_esp**
+9. **iss_api_bff_web_predictions**
+   - Current (future) predictions plus predictions made 30/60/90 minutes ago
+   - CORS-enabled, API key protected
+   - [API README](cloud_functions/iss_api_bff_web_predictions/README.md)
+
+10. **iss_api_bff_esp**
    - Aggregates data for ESP32 IoT display
    - Optimized response format for hardware
    - CORS-enabled, API key protected
@@ -212,7 +234,7 @@ The system consists of 10 independently deployable Cloud Functions:
 
 ### AI Services
 
-9. **iss_api_query_assistant**
+11. **iss_api_query_assistant**
    - Natural language query processing using Gemini
    - Converts questions to database queries
    - Handles feedback submissions
@@ -232,7 +254,7 @@ For detailed API documentation, see individual README files in each API director
 
 ### Prerequisites
 
-- Python 3.10+
+- Python 3.12+
 - Google Cloud SDK (gcloud)
 - Google Cloud Project with billing enabled
 - Service account with appropriate permissions
@@ -278,7 +300,15 @@ gcloud services enable generativelanguage.googleapis.com
    functions-framework --target <function_name> --debug
    ```
 
-5. **Test endpoints**
+5. **Run the unit tests**
+   ```bash
+   pip install -r cloud_functions/tests/requirements-dev.txt \
+       $(for f in cloud_functions/iss_api_*/requirements.txt; do echo -r $f; done)
+   pytest cloud_functions/tests              # all tests
+   pytest cloud_functions/tests -m "not network"   # skip live-API tests
+   ```
+
+6. **Test deployed endpoints**
    ```bash
    ./test_function.sh
    ```
@@ -296,15 +326,24 @@ gcloud services enable generativelanguage.googleapis.com
    ./deploy.sh
    ```
 
+   Or deploy everything (project setup once, then two parallel waves):
+   ```bash
+   ./cloud_functions/config/deploy_all_functions.sh
+   ./cloud_functions/config/deploy_all_functions.sh iss_api_bff_web   # a subset
+   ```
+
+   Project-wide setup (APIs, IAM roles, Firestore indexes) lives in
+   `cloud_functions/config/setup_project.sh`; it is idempotent.
+
 3. **Set up Pub/Sub trigger** (for `iss_api_store_realtime_loc`)
    ```bash
    # Create Pub/Sub topic
-   gcloud pubsub topics create iss-location-updates
+   gcloud pubsub topics create iss_locator_trigger
    
    # Create Cloud Scheduler job (runs every 5 minutes)
    gcloud scheduler jobs create pubsub iss-location-scheduler \
      --schedule="*/5 * * * *" \
-     --topic=iss-location-updates \
+     --topic=iss_locator_trigger \
      --message-body='{"trigger": "scheduled"}'
    ```
 
@@ -312,7 +351,7 @@ gcloud services enable generativelanguage.googleapis.com
    ```bash
    echo -n "your-api-key" | gcloud secrets create iss-sky-scanner-web-api-key --data-file=-
    echo -n "your-api-key" | gcloud secrets create iss-sky-scanner-esp-api-key --data-file=-
-   echo -n "your-gemini-key" | gcloud secrets create gemini-api-key --data-file=-
+   echo -n "your-api-key" | gcloud secrets create iss-feedback-api-key --data-file=-
    ```
 
 5. **Deploy web frontend**
@@ -324,9 +363,11 @@ gcloud services enable generativelanguage.googleapis.com
 All sensitive data is stored in Google Secret Manager:
 - `iss-sky-scanner-web-api-key`: API key for web BFF
 - `iss-sky-scanner-esp-api-key`: API key for ESP32 BFF
-- `gemini-api-key`: Google Gemini API key
+- `iss-feedback-api-key`: API key for the feedback function
 
-Service accounts are used for inter-service authentication.
+Service accounts are used for inter-service authentication. The fun-fact
+and chat functions call Gemini through Vertex AI with the service account
+(`roles/aiplatform.user`), so they need no API key.
 
 ## Usage
 
@@ -341,8 +382,9 @@ Service accounts are used for inter-service authentication.
    - Generates future predictions
 
 3. **Interactive Features**:
-   - Use the history slider to browse past locations (-24h to now)
-   - Use navigation markers (-24h, Now, +24h) for quick jumps
+   - Use the history slider to browse locations from -24h to +90m (predictions)
+   - Use navigation markers (-24h, Now, +90m) and step buttons for quick jumps
+   - Switch to the **Metrics Tables** tab to compare actual positions with earlier predictions
    - Click chat button for AI assistant
    - Map automatically updates when selecting historical locations
 
@@ -474,10 +516,10 @@ curl -X POST "https://your-api-url/iss_api_query_assistant" \
 
 ### External Services & APIs
 
-- **ISS Location Data**: [Open Notify API](http://api.open-notify.org/)
+- **ISS Location Data**: [Where the ISS at?](https://wheretheiss.at/), TLEs from [ARISS](https://live.ariss.org/) and [CelesTrak](https://celestrak.org/)
 - **Reverse Geocoding**: [BigDataCloud API](https://www.bigdatacloud.com/)
-- **AI Model**: [Google Gemini 1.5 Flash](https://ai.google.dev/)
-- **Maps**: [Leaflet.js](https://leafletjs.com/) with [CartoDB](https://carto.com/)
+- **AI Model**: [Google Gemini](https://ai.google.dev/)
+- **Maps**: [Leaflet.js](https://leafletjs.com/) with [Esri](https://www.esri.com/) tiles
 - **Icons**: [Font Awesome](https://fontawesome.com/)
 
 ### Infrastructure

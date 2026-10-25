@@ -41,7 +41,7 @@
 void updateISSData();
 void displayScrollingData(String line1, String line2);
 String convertToLocalTime(String utcString);
-String getPosixTZ(String timezone);
+String getPosixTZ(String timezone, long utcOffsetSeconds);
 void configureTimezone();
 String normalizeString(String input);
 void blinkGreen();
@@ -60,7 +60,8 @@ const char* password = WIFI_PASSWORD;
 // API configuration
 const char* apiEndpoint = "https://iss-api-bff-esp-768423610307.us-east1.run.app/";
 const char* apiKey = API_KEY;
-const char* geoApiEndpoint = "http://ip-api.com/json/";  // Free IP geolocation service
+// Free IP geolocation service; offset is the current UTC offset in seconds
+const char* geoApiEndpoint = "http://ip-api.com/json/?fields=status,timezone,offset";
 
 // Update interval (in milliseconds)
 const unsigned long updateInterval = 300000; // 5 minutes
@@ -84,7 +85,7 @@ String convertToLocalTime(String utcString) {
     
     // Get current local time
     struct tm timeinfo;
-    if(!getLocalTime(&timeinfo)){
+    if(!getLocalTime(&timeinfo, 0)){
         Serial.println("Failed to obtain time");
         return "??:??:??";
     }
@@ -95,16 +96,26 @@ String convertToLocalTime(String utcString) {
 }
 
 // Function to convert timezone name to POSIX format
-String getPosixTZ(String timezone) {
-    // Common US timezone conversions
-    if (timezone == "America/New_York") return "EST5EDT,M3.2.0,M11.1.0";
+String getPosixTZ(String timezone, long utcOffsetSeconds) {
+    // Common US timezone conversions (with DST rules)
+    if (timezone == "America/New_York" || timezone == "America/Detroit" ||
+        timezone.startsWith("America/Indiana/") ||
+        timezone.startsWith("America/Kentucky/")) return "EST5EDT,M3.2.0,M11.1.0";
     if (timezone == "America/Chicago") return "CST6CDT,M3.2.0,M11.1.0";
-    if (timezone == "America/Denver") return "MST7MDT,M3.2.0,M11.1.0";
+    if (timezone == "America/Denver" || timezone == "America/Boise") return "MST7MDT,M3.2.0,M11.1.0";
     if (timezone == "America/Los_Angeles") return "PST8PDT,M3.2.0,M11.1.0";
     if (timezone == "America/Phoenix") return "MST7";  // No DST
     if (timezone == "America/Anchorage") return "AKST9AKDT,M3.2.0,M11.1.0";
     if (timezone == "Pacific/Honolulu") return "HST10";  // No DST
-    return "EST5EDT,M3.2.0,M11.1.0";  // Default to EST if unknown
+
+    // Anywhere else: use the current fixed offset (no DST rules; it is
+    // refreshed on every boot). POSIX offsets are inverted, e.g. UTC+5:30
+    // is "UTC-05:30".
+    long offset = -utcOffsetSeconds;
+    char tz[16];
+    snprintf(tz, sizeof(tz), "UTC%c%02ld:%02ld", offset < 0 ? '-' : '+',
+             labs(offset) / 3600, (labs(offset) % 3600) / 60);
+    return String(tz);
 }
 
 /**
@@ -112,11 +123,15 @@ String getPosixTZ(String timezone) {
  * Uses ip-api.com to determine location and sets system time accordingly
  */
 void configureTimezone() {
+    // Used if the geolocation lookup fails, so NTP still gets configured
+    String posixTZ = "EST5EDT,M3.2.0,M11.1.0";
+
     if (WiFi.status() == WL_CONNECTED) {
         HTTPClient http;
         
         Serial.println("Getting timezone from IP location...");
         http.begin(geoApiEndpoint);
+        http.setTimeout(10000);
         
         int httpResponseCode = http.GET();
         
@@ -124,35 +139,38 @@ void configureTimezone() {
             String payload = http.getString();
             Serial.println("Geolocation response: " + payload);
             
-            StaticJsonDocument<512> doc;
+            StaticJsonDocument<256> doc;
             DeserializationError error = deserializeJson(doc, payload);
             
-            if (!error) {
+            if (!error && doc["status"] == "success") {
                 String timezone = doc["timezone"].as<String>();
-                String posixTZ = getPosixTZ(timezone);
+                posixTZ = getPosixTZ(timezone, doc["offset"].as<long>());
                 Serial.println("Detected timezone: " + timezone);
-                Serial.println("POSIX timezone: " + posixTZ);
-                
-                // Configure timezone and NTP
-                configTzTime(posixTZ.c_str(), ntpServer);
-                
-                // Wait for time sync
-                Serial.println("Waiting for NTP time sync...");
-                while (time(nullptr) < 1000000000) {
-                    delay(100);
-                    Serial.print(".");
-                }
-                Serial.println("\nTime synchronized!");
-                
-                // Print current time to verify
-                struct tm timeinfo;
-                if(getLocalTime(&timeinfo)){
-                    Serial.print("Current local time: ");
-                    Serial.printf("%02d:%02d:%02d\n", timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
-                }
+            } else {
+                Serial.println("Geolocation parse failed, using default timezone");
             }
+        } else {
+            Serial.printf("Geolocation request failed (%d), using default timezone\n", httpResponseCode);
         }
         http.end();
+    }
+
+    Serial.println("POSIX timezone: " + posixTZ);
+    configTzTime(posixTZ.c_str(), ntpServer);
+
+    // Wait (bounded) for time sync; updates keep working without it, the
+    // display just shows ??:??:?? until NTP catches up
+    Serial.println("Waiting for NTP time sync...");
+    unsigned long syncStart = millis();
+    while (time(nullptr) < 1000000000 && millis() - syncStart < 15000) {
+        delay(100);
+        Serial.print(".");
+    }
+    struct tm timeinfo;
+    if (getLocalTime(&timeinfo, 0)) {
+        Serial.printf("\nTime synchronized: %02d:%02d:%02d\n", timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+    } else {
+        Serial.println("\nNTP sync timed out");
     }
 }
 
@@ -321,13 +339,18 @@ void updateISSData() {
             String payload = http.getString();
             Serial.println("Received payload: " + payload);
             
-            StaticJsonDocument<512> doc;
+            // Location + fun fact strings are copied into the document,
+            // so leave room beyond the raw payload size
+            StaticJsonDocument<1536> doc;
             DeserializationError error = deserializeJson(doc, payload);
             
-            if (!error) {
+            if (error) {
+                Serial.print("JSON parse failed: ");
+                Serial.println(error.c_str());
+            } else {
                 String funFact = doc["fun_fact"].as<String>();
                 // Normalize the city name to remove accents while preserving base characters
-                String nearestCity = normalizeString(doc["location_details"].as<String>());
+                String nearestCity = normalizeString(doc["location"] | "Unknown location");
                 String utcTime = doc["timestamp"].as<String>();
                 String localTime = convertToLocalTime(utcTime);
                 

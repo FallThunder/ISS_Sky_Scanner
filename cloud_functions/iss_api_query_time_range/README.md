@@ -31,7 +31,8 @@ GET /iss_api_query_time_range
             "latitude": 45.123,
             "longitude": -122.456,
             "country_code": "US",
-            "location_details": "Portland, Oregon, United States"
+            "location": "Portland, Oregon, United States",
+            "isEmpty": false
         },
         // ... more locations
     ],
@@ -54,7 +55,7 @@ GET /iss_api_query_time_range
 
 ### Prerequisites
 
-- Python 3.10 or higher
+- Python 3.12 or higher
 - Google Cloud SDK
 - Access to Google Cloud Project with Firestore enabled
 

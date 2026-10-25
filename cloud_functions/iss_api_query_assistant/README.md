@@ -1,6 +1,6 @@
 # ISS Query Assistant API
 
-This Cloud Function provides a natural language interface for querying information about the International Space Station (ISS). It uses Google's Gemini AI model to understand and respond to questions about the ISS, including historical location data.
+This Cloud Function provides a natural language interface for querying information about the International Space Station (ISS). It uses Gemini (`gemini-3.5-flash-lite` on Vertex AI, in JSON mode, authenticated as the function's service account) to understand and respond to questions about the ISS, including historical location data.
 
 ## Features
 
@@ -57,7 +57,8 @@ POST https://[REGION]-[PROJECT_ID].cloudfunctions.net/iss_api_query_assistant
 ## Configuration
 
 The function requires the following secret to be set up in Google Cloud Secret Manager:
-- `iss-sky-scanner-google-studio-api-key`: API key for Gemini AI
+- No Gemini API key: the function calls Vertex AI as its service account (`roles/aiplatform.user`).
+  The old `iss-sky-scanner-google-studio-api-key` secret is no longer used (as of Oct 2026 that key was invalid).
 
 ## Deployment
 

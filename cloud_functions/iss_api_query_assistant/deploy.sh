@@ -11,6 +11,10 @@ if [ ! -f "$CONFIG_FILE" ]; then
 fi
 source "$CONFIG_FILE"
 
+# Chains a Gemini call (possibly retried) with a database lookup, so it
+# needs longer than the default timeout.
+TIMEOUT="60s"
+
 # Function-specific configuration
 FUNCTION_NAME="iss_api_query_assistant"
 
@@ -34,29 +38,12 @@ if ! gcloud auth list --filter=status:ACTIVE --format="get(account)" &> /dev/nul
     exit 1
 fi
 
-# Set the project
-echo "🔧 Setting project to $PROJECT_ID..."
-gcloud config set project $PROJECT_ID
-
-# Enable required APIs
-echo "📡 Enabling required APIs..."
-for api in "${REQUIRED_APIS[@]}"; do
-    echo "Enabling $api..."
-    gcloud services enable $api
-done
-
-# Create service account if it doesn't exist
-if ! gcloud iam service-accounts describe "$SERVICE_ACCOUNT_EMAIL" &>/dev/null; then
-    echo "👤 Creating service account: $SERVICE_ACCOUNT_NAME..."
-    gcloud iam service-accounts create $SERVICE_ACCOUNT_NAME \
-        --display-name="ISS Tracker Service Account"
+# Project-wide setup (APIs, service account, IAM roles, Firestore indexes).
+# deploy_all_functions.sh runs it once up front and sets
+# SKIP_PROJECT_SETUP=true so parallel deploys don't race on the IAM policy.
+if [ "$SKIP_PROJECT_SETUP" != "true" ]; then
+    ../config/setup_project.sh
 fi
-
-# Grant necessary IAM roles
-echo "🔑 Granting IAM roles..."
-gcloud projects add-iam-policy-binding $PROJECT_ID \
-    --member="serviceAccount:$SERVICE_ACCOUNT_EMAIL" \
-    --role="roles/secretmanager.secretAccessor"
 
 # Deploy the function
 echo "📦 Deploying function..."

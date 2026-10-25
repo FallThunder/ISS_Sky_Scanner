@@ -92,7 +92,12 @@ def _fetch_location():
     session = _get_session()
     token = get_id_token(LAST_LOC_URL)
     headers = {"Authorization": f"Bearer {token}"}
-    response = session.get(f"{LAST_LOC_URL}?limit=1", headers=headers, timeout=8)
+    response = session.get(
+        LAST_LOC_URL,
+        params={"limit": 1, "valid_only": "true"},
+        headers=headers,
+        timeout=8
+    )
     response.raise_for_status()
     return response.json()
 
@@ -102,7 +107,9 @@ def _fetch_fact(location):
     session = _get_session()
     token = get_id_token(FACT_URL)
     headers = {"Authorization": f"Bearer {token}"}
-    response = session.get(f"{FACT_URL}?location={location}", headers=headers, timeout=8)
+    response = session.get(
+        FACT_URL, params={"location": location}, headers=headers, timeout=8
+    )
     response.raise_for_status()
     return response.json()
 
@@ -132,6 +139,10 @@ def get_iss_location_with_fact():
             return None
             
         location_info = location_data['locations'][0]
+        if location_info.get('is_error_entry') or location_info.get('latitude') is None:
+            # Older query_loc_history deployments ignore valid_only
+            logger.error(f"Latest location is an error entry: {location_info.get('timestamp')}")
+            return None
         location = location_info.get('location')
         
         # Fetch fact

@@ -1,10 +1,14 @@
 # ISS Location Fun Facts API
 
-This Cloud Function generates interesting facts about locations using Google's Gemini 1.5 Flash API. It is designed to be called by other APIs within this project to enhance the ISS tracking experience with location-based trivia.
+This Cloud Function generates interesting facts about locations using Gemini (`gemini-3.5-flash-lite`) on Vertex AI. It is designed to be called by other APIs within this project to enhance the ISS tracking experience with location-based trivia.
 
 ## Features
 
-- Uses Gemini 1.5 Flash for fast, concise fact generation
+- Uses Gemini 3.5 Flash-Lite via the `google-genai` SDK on Vertex AI
+  (model and settings in `config.py`)
+- Model lifecycle: `gemini-3.5-flash-lite` is supported until at least
+  2027-07-21 ([model versions](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/learn/model-versions)).
+  Check this before it retires and bump `GEMINI_SETTINGS['model']`.
 - Generates facts about any geographical location
 - Limits responses to 20 words for quick consumption
 - Includes comprehensive error handling and logging
@@ -53,16 +57,16 @@ If an error occurs, the API returns:
 
 - `flask`: Web framework for Cloud Functions
 - `functions-framework`: Google Cloud Functions framework
-- `google-cloud-secret-manager`: For accessing the Gemini API key
 - `google-cloud-storage`: For accessing the configurable prompt
-- `google-generativeai`: Google's Generative AI client library
+- `google-genai`: Google Gen AI SDK (Vertex AI mode)
 
 ## Authentication
 
 This function:
 1. Requires authentication for incoming requests
-2. Uses service account credentials for Secret Manager and GCS access
-3. Retrieves the Gemini API key from Secret Manager
+2. Uses service account credentials for Vertex AI and GCS access
+3. Needs `roles/aiplatform.user` on the service account (granted by
+   `deploy.sh`); no API key is involved
 
 ## Local Development
 
@@ -79,6 +83,12 @@ This function:
 3. Run locally:
    ```bash
    functions-framework --target iss_api_get_loc_fact --debug
+   ```
+
+   Or call the generator directly (uses your ADC credentials):
+   ```bash
+   gcloud auth application-default login
+   python test_local.py "Paris, France"
    ```
 
 4. Test the endpoint:
@@ -109,15 +119,14 @@ The test script verifies:
 The function handles several types of errors:
 - Authentication failures
 - Missing location parameter
-- Gemini API issues
-- Secret Manager access issues
+- Gemini API issues (a 400 on the thinking config is retried without it)
 - GCS prompt access issues (falls back to default)
 
 ## Related Components
 
 - `iss_api_bff_esp`: Uses this API for IoT display
 - `iss_api_bff_web`: Uses this API for web display
-- Secret Manager: Stores the Gemini API key
+- Vertex AI: Hosts the Gemini model
 - Cloud Storage: Stores the configurable prompt
 
 ## Security

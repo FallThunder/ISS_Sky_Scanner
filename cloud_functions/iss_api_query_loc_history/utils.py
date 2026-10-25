@@ -7,6 +7,16 @@ from typing import Dict, Any, List, Optional
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+VALID_ONLY_SCAN_LIMIT = 500
+
+
+def is_valid_location(data: Dict[str, Any]) -> bool:
+    """Returns True for real location entries (not failed-fetch entries)."""
+    if data.get('is_error_entry') or data.get('isEmpty'):
+        return False
+    return data.get('latitude') is not None and data.get('longitude') is not None
+
+
 def parse_timestamp(timestamp_str: str) -> datetime:
     """
     Parse an ISO format timestamp string into a datetime object.
@@ -31,7 +41,8 @@ def query_location_history(
     longitude_range: Optional[tuple] = None,
     limit: int = 100,
     order_by: str = 'timestamp',
-    order_direction: str = 'DESCENDING'
+    order_direction: str = 'DESCENDING',
+    valid_only: bool = False
 ) -> List[Dict[str, Any]]:
     """
     Query ISS location history with a single filter parameter.
@@ -47,6 +58,8 @@ def query_location_history(
         limit (int): Maximum number of results to return (default: 100)
         order_by (str): Field to order by (default: 'timestamp')
         order_direction (str): 'ASCENDING' or 'DESCENDING' (default: 'DESCENDING')
+        valid_only (bool): Skip error entries (failed fetches with null
+            coordinates). Scans at most VALID_ONLY_SCAN_LIMIT documents.
         
     Returns:
         List[Dict]: List of location data entries matching the criteria
@@ -90,8 +103,9 @@ def query_location_history(
         direction = firestore.Query.DESCENDING if order_direction.upper() == 'DESCENDING' else firestore.Query.ASCENDING
         query = query.order_by(order_by, direction=direction)
         
-        # Apply limit
-        query = query.limit(limit)
+        # Error entries can't be filtered server-side without a composite
+        # index, so over-fetch and filter here when valid_only is set
+        query = query.limit(VALID_ONLY_SCAN_LIMIT if valid_only else limit)
         
         # Execute query
         docs = query.stream()
@@ -100,7 +114,11 @@ def query_location_history(
         results = []
         for doc in docs:
             data = doc.to_dict()
+            if valid_only and not is_valid_location(data):
+                continue
             results.append(data)
+            if len(results) >= limit:
+                break
             
         logger.info(f"Found {len(results)} matching records")
         return results

@@ -19,11 +19,29 @@ The API returns a JSON response with the following structure:
     "timestamp": "2024-12-23T01:40:06+00:00",
     "latitude": 37.4188,
     "longitude": 125.1156,
-    "location_details": "Over the Yellow Sea",
+    "location": "Over the Yellow Sea",
+    "country_code": "",
     "status": "success",
     "version": "1.0"
 }
 ```
+
+(Actual responses wrap entries in `{"locations": [...], "count": N, ...}`.)
+
+### Query Parameters
+
+| Parameter | Description |
+|-----------|-------------|
+| `start_time` / `end_time` | ISO timestamps bounding the query |
+| `country_code` | Two-letter country code |
+| `latitude_range` / `longitude_range` | `"min,max"` |
+| `limit` | Max results (default 100, max 1000) |
+| `order_by` | `timestamp`, `latitude`, `longitude` or `country_code` |
+| `order_direction` | `ASCENDING` or `DESCENDING` (default) |
+| `valid_only` | `true` to skip failed-fetch error entries (`is_error_entry`, null coordinates). Used by the BFFs and the chat assistant. |
+
+Only one filter (time range, country, latitude or longitude) may be used per
+request.
 
 ### Error Response
 
@@ -64,7 +82,7 @@ This function:
 
 3. Run locally:
    ```bash
-   functions-framework --target iss_api_get_last_stored_loc --debug
+   functions-framework --target iss_api_query_loc_history --debug
    ```
 
 4. Test the endpoint:

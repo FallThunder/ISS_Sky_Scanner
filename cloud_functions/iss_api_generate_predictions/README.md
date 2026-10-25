@@ -126,7 +126,13 @@ Deploy to Google Cloud Functions using:
 
 ## Integration
 
-This function is automatically called by `iss_api_store_realtime_loc` after successfully storing a location. It handles cases where the NASA API fails and no location data is available.
+This function is automatically called by `iss_api_store_realtime_loc` after successfully storing a location. It handles cases where the location fetch fails and no location data is available.
+
+The velocity direction comes from the most recent *valid* location stored in
+the previous 30 minutes (error entries are skipped). After an outage, when no
+such point exists, the previous position is derived from the TLE via SGP4.
+The TLE is fetched once per request. Each prediction is propagated from the
+actual fix time to its labelled 5-minute timestamp.
 
 ## Prediction Algorithm
 

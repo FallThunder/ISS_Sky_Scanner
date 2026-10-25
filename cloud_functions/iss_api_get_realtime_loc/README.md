@@ -4,8 +4,12 @@ This Cloud Function fetches and returns the current location of the Internationa
 
 ## Features
 
-- Fetches real-time ISS coordinates from Open Notify API
+- Fetches real-time ISS coordinates from wheretheiss.at, falling back to
+  SGP4 propagation of the latest TLE if that API is unavailable
 - Reverse geocodes the coordinates using BigDataCloud API
+- Reports which source answered in the `source` field (`wheretheiss.at` or
+  `tle_sgp4`)
+- Bounded upstream timeouts (5s each) so the caller's 25s timeout is never hit
 - Provides natural location descriptions for both land and water
 - Includes comprehensive error handling and logging
 
@@ -89,7 +93,7 @@ Deploy to Google Cloud Functions using:
 
 ```bash
 gcloud functions deploy iss_api_get_realtime_loc \
-    --runtime python310 \
+    --runtime python312 \
     --trigger-http \
     --no-allow-unauthenticated
 ```
@@ -100,13 +104,18 @@ This function is internal and requires authentication. It should only be called 
 
 ## External APIs Used
 
-1. **Open Notify API**
-   - Endpoint: `http://api.open-notify.org/iss-now.json`
+1. **Where the ISS at? API** (primary)
+   - Endpoint: `https://api.wheretheiss.at/v1/satellites/25544`
    - Used to fetch real-time ISS coordinates
    - No authentication required
 
-2. **BigDataCloud Reverse Geocoding API**
-   - Endpoint: `https://api.bigdatacloud.net/data/reverse-geocode-client`
+2. **ISS TLE** (fallback)
+   - Endpoints: `https://live.ariss.org/iss.txt`, then CelesTrak
+   - Propagated to the current time with SGP4 (skyfield)
+
+3. **BigDataCloud Reverse Geocoding API**
+   - Endpoint: `https://api-bdc.io/data/reverse-geocode-client` (the old
+     `api.bigdatacloud.net` host now redirects here)
    - Used to get location details from coordinates
    - No authentication required for client version
 
@@ -114,3 +123,8 @@ This function is internal and requires authentication. It should only be called 
 
 - `functions-framework`: Google Cloud Functions framework
 - `requests`: For making HTTP requests to external APIs
+- `skyfield`: SGP4 propagation for the TLE fallback
+
+> Open Notify (`api.open-notify.org`) was removed as a source in October 2026:
+> it returns positions hours out of date while reporting the current
+> timestamp.

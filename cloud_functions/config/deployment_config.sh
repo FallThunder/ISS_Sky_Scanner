@@ -5,11 +5,17 @@ export PROJECT_ID="iss-sky-scanner-20241222"
 export PROJECT_NAME="ISS-Sky-Scanner"
 export PROJECT_NUMBER="768423610307"
 
+# Every gcloud call targets this project without mutating the user's
+# gcloud config (which parallel deploys would race on)
+export CLOUDSDK_CORE_PROJECT="$PROJECT_ID"
+
 # Regional Configuration
 export REGION="us-east1"
 
 # Runtime Configuration
-export RUNTIME="python310"
+# python310 was deprecated 2026-10-04 (decommissioned 2027-04-04).
+# See https://docs.cloud.google.com/functions/docs/runtime-support
+export RUNTIME="python312"
 
 # Service Account Configuration
 export SERVICE_ACCOUNT_NAME="iss-tracker-service"

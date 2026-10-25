@@ -130,7 +130,9 @@ def get_iss_location() -> Dict[str, Any]:
     import time
     request_start_time = time.time()
     request_url = 'https://iss-api-get-realtime-loc-cklav7ht2q-ue.a.run.app'
-    timeout_value = 10
+    # iss_api_get_realtime_loc may try two ISS sources plus a geocode call
+    # (5s each) on top of a cold start, so give it room.
+    timeout_value = 25
     
     try:
         logger.info("Getting ISS location...")
@@ -336,11 +338,8 @@ def store_iss_location() -> Dict[str, Any]:
         # Get ISS location
         location_data = get_iss_location()
         if location_data.get('error'):
+            # get_iss_location has already stored the error entry
             logger.error(f"Error in get_iss_location: {location_data['error']}")
-            # Store error entry in Firestore (error details already captured in get_iss_location)
-            error = Exception(location_data['error'])
-            error_details = location_data.get('error_details', {})
-            store_error_entry(error, 'iss_api_get_realtime_loc', error_details)
             return location_data
 
         logger.info("Preparing document data...")

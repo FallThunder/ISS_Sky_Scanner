@@ -121,10 +121,12 @@ project IAM edits collide.
   entries with coordinates, and never treat `0` as a missing coordinate.
 - Auto-refresh keeps the slider on the user's selected *timestamp*, not its
   index, because each refresh shifts the 24h window.
-- The chat button is hidden with an inline `style="display: none;"` in
-  `docs/index.html`; remove it to re-enable chat. Feedback goes through the
-  chat assistant (`action: store_feedback`); there is no standalone feedback
-  widget because `iss_api_store_feedback` isn't public.
+- Chat (`#chatButton`, `js/chat.js`) talks to `iss_api_query_assistant`. It
+  was hidden from Nov 2025 to Oct 2026 while the assistant was broken; to hide
+  it again, add `style="display: none;"` to the button in `docs/index.html`.
+  Feedback goes through the chat assistant (`action: store_feedback`); there
+  is no standalone feedback widget because `iss_api_store_feedback` isn't
+  public.
 - With live data often empty, test UI changes in a headless browser with
   intercepted mock responses (sinusoidal ground track: lat = 51.6 *
   sin(phase), about +22.5° longitude per 5 minutes) as well as against the

@@ -1,0 +1,4 @@
+# Install with every function's requirements to run the tests:
+#   pip install -r cloud_functions/tests/requirements-dev.txt \
+#       $(for f in cloud_functions/iss_api_*/requirements.txt; do echo -r $f; done)
+pytest>=8

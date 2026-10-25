@@ -41,6 +41,7 @@ def iss_api_query_loc_history(request):
         limit (int, optional): Maximum number of results (default: 100)
         order_by (str, optional): Field to order by (default: 'timestamp')
         order_direction (str, optional): 'ASCENDING' or 'DESCENDING' (default: 'DESCENDING')
+        valid_only (str, optional): 'true' to skip failed-fetch error entries
     
     Returns:
         flask.Response: JSON response containing the filtered ISS location data
@@ -72,6 +73,7 @@ def iss_api_query_loc_history(request):
         limit = min(int(params.get('limit', 100)), 1000)  # Cap at 1000 results
         order_by = params.get('order_by', 'timestamp')
         order_direction = params.get('order_direction', 'DESCENDING')
+        valid_only = params.get('valid_only', '').lower() in ('1', 'true', 'yes')
         
         # Validate order_by field
         valid_fields = {'timestamp', 'latitude', 'longitude', 'country_code'}
@@ -90,7 +92,8 @@ def iss_api_query_loc_history(request):
             longitude_range=lon_range,
             limit=limit,
             order_by=order_by,
-            order_direction=order_direction
+            order_direction=order_direction,
+            valid_only=valid_only
         )
         
         if not results:

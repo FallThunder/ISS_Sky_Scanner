@@ -1,7 +1,9 @@
 from typing import Dict, Any
+import json
 import requests
 import logging
-from google.cloud import secretmanager
+from google import genai
+from google.genai import errors, types
 import google.auth.transport.requests
 import google.auth
 import google.oauth2.id_token
@@ -10,26 +12,35 @@ import google.oauth2.id_token
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def get_gemini_api_key() -> str:
-    """
-    Get the Gemini API key from Secret Manager.
-    
-    Returns:
-        str: The API key
-    """
-    try:
-        client = secretmanager.SecretManagerServiceClient()
-        name = "projects/iss-sky-scanner-20241222/secrets/iss-sky-scanner-google-studio-api-key/versions/latest"
-        response = client.access_secret_version(request={"name": name})
-        return response.payload.data.decode("UTF-8")
-    except Exception as e:
-        logger.error(f"Error getting Gemini API key: {str(e)}")
-        raise
+# Gemini on Vertex AI, authenticated as the function's service account
+# (roles/aiplatform.user); no API key involved.
+# Model lifecycle: https://docs.cloud.google.com/vertex-ai/generative-ai/docs/learn/model-versions
+GEMINI_MODEL = 'gemini-3.5-flash-lite'
+GEMINI_PROJECT = 'iss-sky-scanner-20241222'
+GEMINI_LOCATION = 'global'
+GEMINI_TIMEOUT_MS = 20000
+
+_genai_client = None
+
+
+def get_genai_client() -> genai.Client:
+    """Get or create the Vertex AI Gen AI client (reused across requests)."""
+    global _genai_client
+    if _genai_client is None:
+        _genai_client = genai.Client(
+            vertexai=True,
+            project=GEMINI_PROJECT,
+            location=GEMINI_LOCATION,
+            http_options=types.HttpOptions(timeout=GEMINI_TIMEOUT_MS),
+        )
+    return _genai_client
 
 # System prompt that sets the context
 SYSTEM_PROMPT = """You are a friendly AI assistant that helps people find information about the International Space Station's location and basic facts. The database is updated every 5 minutes with the ISS's location.
 
 RESPONSE FORMAT:
+Always respond with a single JSON object and nothing else.
+
 For database queries, respond with:
 {
     "message": "[Your friendly response here]",
@@ -39,6 +50,10 @@ For database queries, respond with:
         [appropriate query parameters based on the question]
     }
 }
+Supported query parameters: "country_code" (ISO 3166-1 alpha-2),
+"limit" (integer), "order_by" ("timestamp"), "order_direction"
+("ASCENDING" or "DESCENDING"). For the current or most recent location use
+{"limit": 1, "order_by": "timestamp", "order_direction": "DESCENDING"}.
 
 For basic ISS facts (altitude, speed, size), respond with:
 {
@@ -80,68 +95,58 @@ CRITICAL RULES:
 5. For current location queries, ALWAYS query the database for the most recent entry
 6. For country queries, use standard ISO country codes (US, IN, GB, FR, DE, JP, CA, AU, etc.)"""
 
-def query_gemini(prompt: str, api_key: str) -> Dict[Any, Any]:
+def query_gemini(prompt: str) -> str:
     """
-    Query the Gemini API with a given prompt.
-    
-    Args:
-        prompt (str): The text prompt to send to Gemini
-        api_key (str): The API key for Gemini
-        
-    Returns:
-        Dict: The JSON response from the API
-    """
-    # Combine system prompt with user's question
-    full_prompt = f"{SYSTEM_PROMPT}\n\nQuestion: {prompt}\nAnswer:"
+    Query Gemini with the user's question.
 
-    # API endpoint
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
-    
-    # Request headers
-    headers = {
-        'Content-Type': 'application/json'
-    }
-    
-    # Request payload
-    payload = {
-        "contents": [{
-            "parts": [{"text": full_prompt}]
-        }]
-    }
-    
+    Args:
+        prompt (str): The user's question
+
+    Returns:
+        str: The model's reply (a JSON object as text)
+    """
+    config = types.GenerateContentConfig(
+        system_instruction=SYSTEM_PROMPT,
+        response_mime_type='application/json',
+        thinking_config=types.ThinkingConfig(thinking_level='LOW'),
+    )
+    client = get_genai_client()
     try:
-        # Make the API request
-        response = requests.post(
-            f"{url}?key={api_key}",
-            headers=headers,
-            json=payload
+        response = client.models.generate_content(
+            model=GEMINI_MODEL, contents=prompt, config=config
         )
-        
-        # Check if request was successful
-        response.raise_for_status()
-        
-        # Return the JSON response
-        return response.json()
-        
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error making request to Gemini API: {e}")
-        raise
+    except errors.ClientError as e:
+        # Not every model accepts every thinking level; retry with the
+        # model's default rather than failing the request
+        if e.code != 400:
+            raise
+        logger.warning(f"Retrying without thinking config: {e}")
+        config.thinking_config = None
+        response = client.models.generate_content(
+            model=GEMINI_MODEL, contents=prompt, config=config
+        )
 
-def extract_response_text(response: Dict[Any, Any]) -> str:
+    if not response.text:
+        raise ValueError("Empty response from Gemini")
+    return response.text
+
+
+def parse_model_json(text: str) -> Dict[str, Any]:
     """
-    Extract the text response from Gemini API's JSON response.
-    
+    Parse the model's JSON reply, tolerating Markdown code fences.
+
     Args:
-        response (Dict): The JSON response from Gemini API
-        
+        text (str): Raw model output
+
     Returns:
-        str: The extracted text response
+        Dict: The parsed object
     """
-    try:
-        return response['candidates'][0]['content']['parts'][0]['text']
-    except (KeyError, IndexError) as e:
-        logger.error(f"Error extracting response text: {e}")
-        return "Sorry, I couldn't process that response."
+    cleaned = text.strip()
+    if cleaned.startswith('```'):
+        cleaned = cleaned.split('\n', 1)[1] if '\n' in cleaned else ''
+        cleaned = cleaned.rsplit('```', 1)[0]
+    return json.loads(cleaned)
+
 
 def get_cors_headers(is_preflight: bool = False) -> Dict[str, str]:
     """
@@ -178,7 +183,8 @@ def query_database(query_data, auth_session):
     logger.info(f"Querying database with data: {query_data}")
     
     # Use the parameters directly from the AI's query_data
-    params = {}
+    # Skip failed-fetch entries (null coordinates) so answers are real data
+    params = {'valid_only': 'true'}
     for key in ['country_code', 'limit', 'order_by', 'order_direction']:
         if key in query_data:
             params[key] = query_data[key]
@@ -205,7 +211,7 @@ def query_database(query_data, auth_session):
         }
         
         logger.info("Making authenticated request with ID token")
-        response = requests.get(url, params=params, headers=headers)
+        response = requests.get(url, params=params, headers=headers, timeout=15)
         logger.info(f"Response status code: {response.status_code}")
         logger.info(f"Response headers: {response.headers}")
         logger.info(f"Raw response: {response.text}")
@@ -317,7 +323,7 @@ def store_feedback(feedback_data, auth_session):
             'rating': int(feedback_data['rating']),
             'feedback': feedback_data['feedback'],
             'userAgent': feedback_data.get('userAgent', 'Unknown')
-        }, headers=headers)
+        }, headers=headers, timeout=15)
         
         response.raise_for_status()
         return response.json()

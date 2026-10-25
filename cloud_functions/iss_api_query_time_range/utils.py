@@ -1,5 +1,5 @@
 from google.cloud import firestore
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import logging
 from typing import Dict, Any, List
 
@@ -21,13 +21,14 @@ def query_time_range(minutes: int = 60) -> List[Dict[str, Any]]:
         # Initialize Firestore client
         db = firestore.Client()
         
-        # Calculate time range
-        now = datetime.utcnow()
+        # Calculate time range. Stored timestamps are ISO strings with a
+        # +00:00 offset, so the bounds use the same format to compare
+        # correctly as strings.
+        now = datetime.now(timezone.utc)
         start_time = now - timedelta(minutes=minutes)
         
-        # Convert to ISO format strings
-        start_time_str = start_time.isoformat() + 'Z'
-        now_str = now.isoformat() + 'Z'
+        start_time_str = start_time.isoformat()
+        now_str = now.isoformat()
         
         # Build and execute query
         query = db.collection('iss_loc_history')\
@@ -38,32 +39,38 @@ def query_time_range(minutes: int = 60) -> List[Dict[str, Any]]:
         # Execute query
         docs = query.stream()
         
-        # Convert to list of dictionaries with only required fields
+        # Convert to list of dictionaries with only required fields,
+        # keeping one entry per timestamp (a real location wins over an
+        # error entry for the same slot)
         results = []
+        index_by_timestamp = {}
         for doc in docs:
             data = doc.to_dict()
             
-            # Check if this is an error entry
-            is_error_entry = data.get('is_error_entry', False)
-            
-            # If it's an error entry, ensure isEmpty is set to True
-            if is_error_entry:
-                results.append({
+            # Error entries mark a failed fetch: no coordinates
+            if data.get('is_error_entry', False):
+                entry = {
                     'timestamp': data['timestamp'],
                     'latitude': None,
                     'longitude': None,
                     'location': None,
                     'isEmpty': True
-                })
+                }
             else:
-                # Regular location entry
-                results.append({
+                entry = {
                     'timestamp': data['timestamp'],
                     'latitude': data.get('latitude'),
                     'longitude': data.get('longitude'),
                     'location': data.get('location', ''),
                     'isEmpty': data.get('isEmpty', False)
-                })
+                }
+            
+            existing_index = index_by_timestamp.get(entry['timestamp'])
+            if existing_index is None:
+                index_by_timestamp[entry['timestamp']] = len(results)
+                results.append(entry)
+            elif results[existing_index]['isEmpty'] and not entry['isEmpty']:
+                results[existing_index] = entry
             
         logger.info(f"Found {len(results)} records in the last {minutes} minutes")
         return results

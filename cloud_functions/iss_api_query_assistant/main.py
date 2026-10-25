@@ -1,7 +1,7 @@
 import functions_framework
 from flask import jsonify, request
 import logging
-from utils import query_gemini, extract_response_text, get_cors_headers, get_gemini_api_key, query_database, format_database_response, store_feedback
+from utils import query_gemini, get_cors_headers, query_database, format_database_response, store_feedback, parse_model_json
 from google.auth.transport.requests import AuthorizedSession, Request
 from google.oauth2 import id_token
 import google.auth
@@ -50,21 +50,16 @@ def iss_api_query_assistant(request):
                 'status': 'error'
             }), 400, get_cors_headers()
 
-        # Get API key
-        logger.info("Getting Gemini API key")
-        api_key = get_gemini_api_key()
-        
         # Query Gemini
-        logger.info("Querying Gemini API")
-        response = query_gemini(user_query, api_key)
-        answer = extract_response_text(response)
+        logger.info("Querying Gemini")
+        answer = query_gemini(user_query)
         logger.info(f"Raw Gemini response: {answer}")
         
         # Parse the response to get the action and data
         try:
             import json
             logger.info("Parsing Gemini response")
-            response_data = json.loads(answer.strip('`json\n'))
+            response_data = parse_model_json(answer)
             message = response_data.get('message', '')
             action = response_data.get('action', '')
             data = response_data.get('data', {})

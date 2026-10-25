@@ -1,3 +1,4 @@
-flask==3.0.0
-functions-framework==3.*
-requests>=2.32.4
+flask>=3.1,<4
+functions-framework>=3.10,<4
+requests>=2.34,<3
+skyfield>=1.55,<2

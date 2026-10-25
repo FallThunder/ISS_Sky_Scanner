@@ -59,7 +59,12 @@ def get_iss_location_with_fact():
         logger.info("Fetching latest ISS location...")
         token = get_id_token(LAST_LOC_URL)
         headers = {"Authorization": f"Bearer {token}"}
-        location_response = requests.get(f"{LAST_LOC_URL}?limit=1", headers=headers)
+        location_response = requests.get(
+            LAST_LOC_URL,
+            params={"limit": 1, "valid_only": "true"},
+            headers=headers,
+            timeout=8
+        )
         location_response.raise_for_status()
         location_data = location_response.json()
 
@@ -73,15 +78,25 @@ def get_iss_location_with_fact():
             return None
             
         location_info = location_data['locations'][0]
+        if location_info.get('is_error_entry') or location_info.get('latitude') is None:
+            # Older query_loc_history deployments ignore valid_only
+            logger.error(f"Latest location is an error entry: {location_info.get('timestamp')}")
+            return None
 
         # Get fun fact about the location
         location = location_info.get('location')
         logger.info(f"Fetching fun fact for location: {location}")
         token = get_id_token(FACT_URL)  # Get a new token for the fact API
         headers = {"Authorization": f"Bearer {token}"}
-        fact_response = requests.get(f"{FACT_URL}?location={location}", headers=headers)
-        fact_response.raise_for_status()
-        fact_data = fact_response.json()
+        try:
+            fact_response = requests.get(
+                FACT_URL, params={"location": location}, headers=headers, timeout=8
+            )
+            fact_response.raise_for_status()
+            fact_data = fact_response.json()
+        except Exception as e:
+            logger.warning(f"Fact fetch failed: {str(e)}")
+            fact_data = {'fact': 'Fun fact coming soon!'}
 
         # Combine the data
         location_info['fun_fact'] = fact_data.get('fact', 'Fun fact coming soon!')

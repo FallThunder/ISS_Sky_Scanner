@@ -78,7 +78,9 @@ def main():
     ]
     countries = [
         {
-            'name': f['properties']['NAME'],
+            # ADMIN is the full name ("Democratic Republic of the Congo",
+            # not NAME's "Dem. Rep. Congo") and matches the states' 'admin'
+            'name': f['properties']['ADMIN'],
             'code': country_code(f['properties']),
             'geometry': compact_geometry(f['geometry']),
         }

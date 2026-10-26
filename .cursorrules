@@ -111,7 +111,7 @@ This project uses a Firestore database named '(default)' with these collections:
 ## APIs
 All APIs are written using Python/Flask and deployed as Google Cloud Functions (2nd gen, `python312`):
 
-1. **iss_api_get_realtime_loc** - Fetches the current ISS location (wheretheiss.at, falling back to SGP4 propagation of the ARISS/CelesTrak TLE) and reverse geocodes it (BigDataCloud)
+1. **iss_api_get_realtime_loc** - Fetches the current ISS location (wheretheiss.at, falling back to SGP4 propagation of the ARISS/CelesTrak TLE) and reverse geocodes it offline (Natural Earth polygons in geodata.json)
 2. **iss_api_store_realtime_loc** - Pub/Sub-triggered every 5 minutes; stores the location (or an error entry) in Firestore, then calls iss_api_generate_predictions
 3. **iss_api_generate_predictions** - Generates and stores orbital-mechanics predictions
 4. **iss_api_get_loc_fact** - Uses Gemini 3.5 Flash-Lite (Vertex AI, google-genai SDK) to find fun facts about locations
